@@ -18,9 +18,9 @@ ardia browse flow run search --param q=toaster --fields title,price --limit 5
   requests sent become params, named after the field (`--param name=value` names one and keeps it as the example).
   `--from`/`--to` pick other steps, `--output s3r1` the request whose answer the flow returns (default: the largest
   that uses a param).
-- `flow run` sends that GET from a background tab on the site, with the user's logins, and checks the answer still
-  has the recorded shape. If it can't, it replays the recorded commands with request interception on: any request
-  that isn't a GET or HEAD to the flow's own hosts is blocked and listed as `blocked`, and the run is unverified.
+- `flow run` opens the flow's start page like `open` (or uses a tab already there) and sends that GET from it, with
+  the user's logins, then checks the answer still has the recorded shape. It never replays clicks or typing. A site
+  whose GET endpoints change state (some logout links) isn't protected against that.
 - The answer is the main list: `{list, total, matched, items}`. `--fields a,b.c` keeps those fields, `--where f=v`
   keeps items whose field contains v (any case), `--limit n` the first n. An unknown field fails and lists the real
   ones.
@@ -31,11 +31,13 @@ ardia browse flow run search --param q=toaster --fields title,price --limit 5
 
 | code | do |
 | --- | --- |
-| `auth_expired` | ask the user to sign in again in Ardia, then rerun |
+| `auth_expired`, `redirected` | ask the user to sign in again in Ardia and rerun, or do the task in the page |
 | `blocked`, `rate_limited` | wait, or do the task in the page |
 | `drifted` | the site changed: do it in the page and `flow save` again |
+| `fetch_failed`, `http_error` | do the task in the page |
 | `flow_not_get` | the answer came from a POST: flows can't hold it, do it in the page |
-| `replay_unavailable` | the replay needs request interception, which this connection refuses: do it in the page |
 
 Flows never store cookies, auth headers, request bodies, what was typed into a password, card or code field, or a URL
-value other than a param, a number or a short word; such a request is left out and the save report says why.
+value other than a param, a number or a short word; such a request is left out and the save report says why. A short
+opaque token or numeric id under a query key the rule doesn't recognize can still be kept, so check `flow show`
+before relying on a flow for a sensitive site.

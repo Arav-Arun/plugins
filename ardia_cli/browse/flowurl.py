@@ -166,7 +166,10 @@ def host_label(url) -> str:
         return "(unparseable)"
 
 
-def mask(url) -> str:
+def mask(url, secrets=()) -> str:
+    def hidden(value: str) -> bool:
+        return any(carries(value, secret) for secret in secrets)
+
     try:
         parts = urlsplit(str(url))
     except ValueError:
@@ -177,11 +180,13 @@ def mask(url) -> str:
     segments = []
     for segment in parts.path.split("/"):
         decoded = unquote(segment)
-        segments.append(segment if not decoded or literal_ok(decoded, segment=True) else HIDDEN)
+        segments.append(segment if not decoded or (literal_ok(decoded, segment=True) and not hidden(decoded)) else HIDDEN)
     pairs = []
     for key, value in query_pairs(parts.query):
         shown_key = key if QUERY_KEY.fullmatch(key) else HIDDEN
-        shown = value if literal_ok(value) and not (value and credential_key(key)) else HIDDEN
+        shown = value if literal_ok(value) and not (value and credential_key(key)) and not hidden(value) else HIDDEN
         pairs.append(f"{quote(shown_key, safe='[]<>')}={quote(shown, safe='{}<>')}" if value else quote(shown_key, safe="[]<>"))
     netloc = parts.netloc.rpartition("@")[2].lower()
+    if hidden(netloc):
+        netloc = HIDDEN
     return f"{scheme}://{netloc}{'/'.join(segments) or '/'}" + (f"?{'&'.join(pairs)}" if pairs else "")

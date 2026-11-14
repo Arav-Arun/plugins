@@ -17,9 +17,8 @@ ACT_COUNTS = frozenset({"cell_edits"})
 CHANGE_FLAGS = frozenset({"change_text", "change_run_choices", "open_report", "open_moved_tab", "snapshot_disabled_folded", "names_clipped",
                           "waited_for_reaction"})
 CHANGE_COUNTS = frozenset({"change_text_chars"})
-FLOW_FLAGS = frozenset({"flow_saved", "flow_hint_shown", "flow_run_page", "flow_run_replay", "flow_fell_back", "flow_drifted", "flow_shaped",
-                        "flow_replay_blocked"})
-FLOW_COUNTS = frozenset({"flow_requests_kept", "flow_params", "flow_items", "flow_blocked"})
+FLOW_FLAGS = frozenset({"flow_saved", "flow_hint_shown", "flow_run_page", "flow_drifted", "flow_shaped"})
+FLOW_COUNTS = frozenset({"flow_requests_kept", "flow_params", "flow_items"})
 FLAGS = frozenset({"daemon_spawned", "reconnected_after_idle", "output_truncated", "humanize", "unsettled", "daemon_answer_timed_out",
                    "followed_redrawn_ref", "script_eval_alias", "script_page_world_hint", "attach_refused", "viewport_set", "crashed_reloaded",
                    "network_disable_unconfirmed", "reattached_after_detach",

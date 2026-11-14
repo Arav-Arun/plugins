@@ -13,8 +13,6 @@ document.getElementById("go").addEventListener("click", async () => {
   const q = document.getElementById("q").value;
   const response = await fetch(`flowdata/${encodeURIComponent(q)}.json?q=${encodeURIComponent(q)}`, { headers: { accept: "application/json" } });
   const data = await response.json();
-  fetch("flowdata/track", { method: "POST", body: "seen" }).catch(() => {});
-  fetch("/redirect?to=" + encodeURIComponent(`http://localhost:${location.port}/flowdata/kettle.json`)).catch(() => {});
   document.getElementById("results").innerHTML = data.results.map((item) => `<li>${item.title}: $${item.price}</li>`).join("");
 });
 </script>

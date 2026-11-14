@@ -26,24 +26,25 @@ NOISE_KEY = re.compile(r"^(utm_.*|fbclid|gclid|dclid|msclkid|mc_[a-z]+|_ga|_gl|r
 SIGNATURE_DEPTH = 6
 SIGNATURE_KEYS = 80
 HINT_LIMIT = 5
-REPLAYABLE = {"open", "click", "dblclick", "fill", "type", "press", "keyboard", "select", "check", "uncheck", "find", "back", "forward",
-              "reload", "scroll", "scrollintoview", "hover", "focus", "wait"}
-REPLAY_FLAGS = {"--name", "--exact", "--partial", "--text", "--url", "--load", "--timeout", "--state", "--no-humanize"}
-FIND_ACTIONS = {"click", "fill", "type", "press", "check", "uncheck", "select", "hover", "focus", "dblclick", "text"}
+KEY_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,31}")
+SCRIPT_ID = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
+ANY_KEY = "*"
+MAX_EXAMPLE = 40
+MAX_WORD = 200
 FIELDS = {"version", "name", "description", "site", "origin", "startUrl", "hosts", "createdAt", "createdBy", "params", "output", "verified",
-          "replayable", "redactedSteps", "steps"}
+          "steps"}
 REQUIRED = ("version", "name", "site", "origin", "startUrl", "hosts", "params", "output", "steps")
-STEP_FIELDS = {"seq", "command", "url", "ok", "requests", "why"}
+STEP_FIELDS = {"seq", "command", "url", "ok", "requests"}
 REQUEST_FIELDS = {"id", "method", "url", "headers", "kind", "expect", "strippedAuth"}
 KEPT_HEADERS = {"accept", "x-requested-with"}
 HEADER_VALUE = re.compile(r"[A-Za-z0-9/*+.,;= -]{0,100}")
 SAVE_FLAGS = {"--from": "value", "--to": "value", "--param": "multi", "--output": "value", "--description": "value"}
-RUN_FLAGS = {"--param": "multi", "--fields": "value", "--where": "multi", "--limit": "value", "--tier": "value", "--site": "value", "--timeout": "value"}
+RUN_FLAGS = {"--param": "multi", "--fields": "value", "--where": "multi", "--limit": "value", "--site": "value", "--timeout": "value"}
 SITE_FLAGS = {"--site": "value"}
 READ_ONLY = ("Flows are read-only for now: they keep and send GET requests only, and the answer in that range came from {methods}. "
              "Do this task in the page")
 USAGE = ("Usage: ardia browse flow steps [--all] | save <name> [--from n] [--to n] [--param k=v] [--output id] [--description text]\n"
-         "  | run <name> [--param k=v] [--fields a,b.c] [--where f=v] [--limit n] [--tier page|replay]\n"
+         "  | run <name> [--param k=v] [--fields a,b.c] [--where f=v] [--limit n]\n"
          "  | list [site] | show <name> [--site s] | rm <name> [--site s]")
 
 
@@ -89,15 +90,24 @@ def origin_allowed(url: flowurl.Url, start: flowurl.Url) -> bool:
     return flowlog.base_domain(url.host) == flowlog.base_domain(start.host)
 
 
-def signature(value, depth: int = 0):
+def key_ok(key, secrets=()) -> bool:
+    return isinstance(key, str) and bool(KEY_NAME.fullmatch(key)) and not any(carries(key, secret) for secret in secrets)
+
+
+def signature(value, depth: int = 0, secrets=()):
     if isinstance(value, dict):
         if depth >= SIGNATURE_DEPTH:
             return "object"
-        return {str(key): signature(inner, depth + 1) for key, inner in list(value.items())[:SIGNATURE_KEYS]}
+        shape = {}
+        for key, inner in list(value.items())[:SIGNATURE_KEYS]:
+            name = str(key) if key_ok(key, secrets) else ANY_KEY
+            if name not in shape:
+                shape[name] = signature(inner, depth + 1, secrets) if name != ANY_KEY else "any"
+        return shape
     if isinstance(value, list):
         if depth >= SIGNATURE_DEPTH:
             return "array"
-        return [signature(value[0], depth + 1)] if value else []
+        return [signature(value[0], depth + 1, secrets)] if value else []
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, (int, float)):
@@ -117,6 +127,8 @@ def drift(recorded, value, path: str = "") -> str | None:
         if not isinstance(value, dict):
             return f"{where} is no longer an object"
         for key, inner in recorded.items():
+            if key == ANY_KEY:
+                continue
             if key not in value:
                 return f"{joined(path, key)} is missing"
             found = drift(inner, value[key], joined(path, key))
@@ -131,7 +143,7 @@ def drift(recorded, value, path: str = "") -> str | None:
         return None if isinstance(value, dict) else f"{where} is no longer an object"
     if recorded == "array":
         return None if isinstance(value, list) else f"{where} is no longer a list"
-    if recorded == "null" or value is None:
+    if recorded in ("null", "any") or value is None:
         return None
     now = "an object" if isinstance(value, dict) else "a list" if isinstance(value, list) else f"a {signature(value)}"
     return None if signature(value) == recorded else f"{where} was a {recorded}, now {now}"
@@ -334,11 +346,17 @@ def build_flow(name: str, steps: list[dict], given: dict | None = None, output: 
             continue
         value = body_value(request)
         found = shaping.main_list(value)
-        expect = {"status": request.get("status"), "mime": request.get("mime") or "", "signature": signature(value), "bytes": request.get("bytes") or 0,
-                  "list": found[0] if found else None,
-                  "itemFields": [field for field in shaping.item_fields(found[1]) if FIELD_NAME.fullmatch(field)] if found else []}
+        list_path = found[0] if found and found[0] and all(key_ok(part, secrets) for part in found[0].split(".")) else None
+        expect = {"status": request.get("status"), "mime": request.get("mime") or "", "signature": signature(value, secrets=secrets),
+                  "bytes": request.get("bytes") or 0, "list": list_path,
+                  "itemFields": [field for field in shaping.item_fields(found[1]) if FIELD_NAME.fullmatch(field)
+                                 and not any(carries(field, secret) for secret in secrets)] if found else []}
         if request.get("kind") == "document":
-            expect["extract"] = request.get("spec")
+            spec = request.get("spec") or {}
+            if "scriptId" in spec and not SCRIPT_ID.fullmatch(str(spec["scriptId"])):
+                dropped.append({"id": request["id"], "why": "the page's JSON block has an id a flow doesn't keep"})
+                continue
+            expect["extract"] = spec
         kept = {"id": request["id"], "method": "GET", "url": url,
                 "headers": {key: value for key, value in (request.get("headers") or {}).items() if header_ok(key, value)},
                 "kind": request.get("kind") or "json", "expect": expect}
@@ -357,51 +375,28 @@ def build_flow(name: str, steps: list[dict], given: dict | None = None, output: 
         raise Usage(f"--output {output} isn't one of the GET requests kept: {', '.join(request['id'] for request in requests)}")
 
     saved_steps = []
-    redacted_steps = []
-    not_replayable = []
     for step in steps:
-        command = list(step["replay"]) if step.get("replay") else None
+        command = [str(part) for part in step.get("replay") or step["command"]]
         typed = step.get("typed") or {}
-        hidden = False
-        if command is not None and typed.get("index") is not None and typed["index"] < len(command):
-            if typed.get("secret"):
-                command[typed["index"]] = REDACTED
-                hidden = True
-            elif typed.get("value") in named:
-                command[typed["index"]] = placeholder(named[typed["value"]])
-        if command is not None and command[0] == "open" and len(command) > 1:
-            opened = safe_url(normalize_url(command[1]), values, secrets, start)
-            if opened is None:
-                command[1] = REDACTED
-                hidden = True
-            else:
-                command[1] = opened
-                hosts.add(flowurl.parse(opened).origin)
-        if command is not None and secrets:
-            scrubbed = scrub(command, secrets)
-            hidden = hidden or scrubbed != command
-            command = scrubbed
-        if hidden:
-            redacted_steps.append(step["seq"])
-        if command is None:
-            not_replayable.append({"seq": step["seq"], "why": step.get("why") or "it can't be replayed"})
+        if typed.get("value"):
+            shown = REDACTED if typed.get("secret") else placeholder(named[typed["value"]]) if typed["value"] in named else None
+            command = [shown if shown and part == typed["value"] else part for part in command]
+        command = [masked_part(part, {}, secrets, values) for part in scrub(command, secrets)]
+        command = [part if len(part) <= MAX_WORD else part[:MAX_WORD] + "…" for part in command]
         page_url = step.get("url") or ""
-        after = REDACTED if any(carries(page_url, secret) for secret in secrets) else flowurl.mask(template_url(page_url, values)) if page_url else ""
-        saved = {"seq": step["seq"], "command": command, "url": after, "ok": bool(step.get("ok", True)), "requests": kept_by_step.get(step["seq"], [])}
-        if command is None:
-            saved["why"] = step.get("why") or "it can't be replayed"
-        saved_steps.append(saved)
+        after = flowurl.mask(template_url(page_url, values), secrets) if page_url else ""
+        saved_steps.append({"seq": step["seq"], "command": command, "url": after, "ok": bool(step.get("ok", True)),
+                            "requests": kept_by_step.get(step["seq"], [])})
     start_saved = safe_url(start.text, values, secrets, start)
     flow = {
         "version": VERSION, "name": name, "description": " ".join(str(description or "").split())[:MAX_DESCRIPTION] or None, "site": site,
         "origin": start.origin, "startUrl": start_saved or start.origin + "/", "hosts": sorted(hosts),
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "createdBy": {"tool": "ardia browse", "version": tool_version},
-        "params": params, "output": output or default_output(requests), "verified": True,
-        "replayable": not redacted_steps and not not_replayable and start_saved is not None, "redactedSteps": redacted_steps, "steps": saved_steps,
+        "params": params, "output": output or default_output(requests), "verified": True, "steps": saved_steps,
     }
     report = {"requests": [{"id": request["id"], "method": request["method"], "url": request["url"], "kind": request["kind"],
                             "list": request["expect"]["list"]} for request in requests],
-              "params": params, "notReplayable": not_replayable, "redactedSteps": redacted_steps, "dropped": dropped,
+              "params": params, "dropped": dropped,
               "unkept": sorted(set(unkept)), "output": flow["output"]}
     return flow, report
 
@@ -425,27 +420,11 @@ def strict(url, hosts: list, what: str) -> flowurl.Url:
     return parsed
 
 
-def check_command(command, flow: dict):
+def check_command(command):
     if command is None:
         return
-    if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
-        raise invalid("has a step that isn't a list of words")
-    name, args = command[0], command[1:]
-    if name not in REPLAYABLE:
-        raise invalid(f"replays `{name[:20]}`, which a flow never runs")
-    flags = [arg.split("=", 1)[0] for arg in args if arg.startswith("--")]
-    if any(flag not in REPLAY_FLAGS for flag in flags):
-        raise invalid(f"passes {', '.join(flag for flag in flags if flag not in REPLAY_FLAGS)[:60]} to `{name}`")
-    if name == "open":
-        if len(args) != 1:
-            raise invalid("has an `open` without exactly one URL")
-        strict(args[0], flow["hosts"], "an `open` URL")
-    if name == "keyboard" and (not args or args[0] not in ("type", "inserttext")):
-        raise invalid("has a keyboard step other than type or inserttext")
-    if name == "find" and not any(arg in FIND_ACTIONS for arg in args):
-        raise invalid("has a find step with no action it allows")
-    if name == "wait" and any(re.match(r"(?i)^[a-z][a-z0-9+.-]*:", arg) for arg in args):
-        raise invalid("has a wait step with a URL")
+    if not isinstance(command, list) or not command or not all(isinstance(part, str) and len(part) <= MAX_WORD + 1 for part in command):
+        raise invalid("has a step that isn't a short list of words")
 
 
 def validate(flow, site: str | None = None, name: str | None = None) -> dict:
@@ -492,7 +471,7 @@ def validate(flow, site: str | None = None, name: str | None = None) -> dict:
     for step in flow["steps"]:
         if not isinstance(step, dict) or not set(step) <= STEP_FIELDS:
             raise invalid("has a step with fields a flow doesn't have")
-        check_command(step.get("command"), flow)
+        check_command(step.get("command"))
         for request in step.get("requests") or []:
             if not isinstance(request, dict) or not set(request) <= REQUEST_FIELDS:
                 raise invalid("has a request with fields a flow doesn't keep (a body?)")
@@ -601,8 +580,7 @@ def summary(flow: dict) -> dict:
     request = output_request(flow) or {}
     return {"site": flow["site"], "name": flow["name"], "description": flow.get("description"),
             "params": [{"name": param["name"], "example": param.get("example"), "source": param.get("source")} for param in flow["params"]],
-            "itemFields": (request.get("expect") or {}).get("itemFields") or [], "verified": bool(flow.get("verified", True)),
-            "replayable": bool(flow.get("replayable"))}
+            "itemFields": (request.get("expect") or {}).get("itemFields") or [], "verified": bool(flow.get("verified", True))}
 
 
 def remove(root: Path, site: str, name: str) -> bool:
@@ -667,7 +645,7 @@ def show_text(flow: dict) -> str:
         example = f" (recorded: {param['example']})" if param.get("example") else " (required)"
         lines.append(f"param {param['name']} [{param.get('source')}]{example}")
     for step in flow["steps"]:
-        command = " ".join(step["command"]) if step.get("command") else f"(not replayable: {step.get('why')})"
+        command = " ".join(step["command"]) if step.get("command") else "(a step with no command)"
         lines.append(f"[{step['seq']}] {command}")
         for request in step.get("requests") or []:
             mark = " ← output" if request["id"] == flow["output"] else ""
@@ -760,42 +738,46 @@ def save_range(log: flowlog.Log, first: int | None, last: int | None) -> list[di
     return [step for step in steps if first <= step["seq"] <= last]
 
 
-def masked_part(part: str, typed: dict) -> str:
-    if typed.get("secret") and part == typed.get("value"):
+def masked_part(part: str, typed: dict, secrets=(), values=()) -> str:
+    if (typed.get("secret") and part == typed.get("value")) or any(part == secret for secret in secrets):
         return REDACTED
     if re.match(r"(?i)^[a-z][a-z0-9+.-]*://", part) or re.match(r"(?i)^(localhost|[\w-]+(\.[\w-]+)+)(:\d+)?/", part):
-        return flowurl.mask(normalize_url(part))
-    return part
+        return flowurl.mask(template_url(normalize_url(part), list(values)) if values else normalize_url(part), secrets)
+    return REDACTED if any(carries(part, secret) for secret in secrets) else part
 
 
-def shown_command(step: dict) -> list[str]:
+def log_secrets(steps) -> list[str]:
+    return [step["typed"]["value"] for step in steps if (step.get("typed") or {}).get("secret") and step["typed"].get("value")]
+
+
+def shown_command(step: dict, secrets=()) -> list[str]:
     typed = step.get("typed") or {}
-    return [masked_part(part, typed) for part in step.get("replay") or step["command"]]
+    return [masked_part(str(part), typed, secrets) for part in step.get("replay") or step["command"]]
 
 
-def step_line(step: dict) -> list[str]:
+def step_line(step: dict, secrets=()) -> list[str]:
     status = "" if step.get("ok", True) else f"  ✗ {step.get('error') or 'failed'}"
-    lines = [f"[{step['seq']}] {' '.join(shown_command(step))}  → {flowurl.mask(step['url']) if step.get('url') else '(no page)'}{status}"]
+    page = flowurl.mask(step["url"], secrets) if step.get("url") else "(no page)"
+    lines = [f"[{step['seq']}] {' '.join(shown_command(step, secrets))}  → {page}{status}"]
     for request in step.get("requests") or []:
         kind = request.get("kind") or "json"
         body = "" if body_value(request) is not None else " (answer dropped)"
-        lines.append(f"    {request['id']} GET {flowurl.mask(request['url'])} {request.get('status')} {kind}{body}")
+        lines.append(f"    {request['id']} GET {flowurl.mask(request['url'], secrets)} {request.get('status')} {kind}{body}")
     unkept = step.get("unkept") or []
     if unkept:
         lines.append(f"    not kept (flows are read-only): {', '.join(sorted(set(unkept)))} ×{len(unkept)}")
-    if step.get("why"):
-        lines.append(f"    not replayable: {step['why']}")
     return lines
 
 
 def steps_result(log: flowlog.Log, everything: bool) -> Result:
+    secrets = log_secrets(log.steps)
     steps = [step for step in log.steps if everything or step["seq"] > log.saved_through]
-    rows = [{"seq": step["seq"], "command": shown_command(step), "url": flowurl.mask(step["url"]) if step.get("url") else None,
+    rows = [{"seq": step["seq"], "command": shown_command(step, secrets), "url": flowurl.mask(step["url"], secrets) if step.get("url") else None,
              "ok": step.get("ok", True),
-             "requests": [{"id": request["id"], "method": "GET", "url": flowurl.mask(request["url"]), "status": request.get("status"),
+             "requests": [{"id": request["id"], "method": "GET", "url": flowurl.mask(request["url"], secrets), "status": request.get("status"),
                            "kind": request.get("kind")} for request in step.get("requests") or []],
              "notKept": len(step.get("unkept") or [])} for step in steps]
-    lines = [line for step in steps for line in step_line(step)]
+    lines = [line for step in steps for line in step_line(step, secrets)]
     if log.dropped:
         lines.insert(0, f"({log.dropped} older steps dropped)")
     empty = ("Nothing recorded since the last save" if log.steps else "Nothing recorded yet: open a page and do the task once "
@@ -803,21 +785,18 @@ def steps_result(log: flowlog.Log, everything: bool) -> Result:
     return Result({"steps": rows, "savedThrough": log.saved_through, "dropped": log.dropped}, "\n".join(lines) or empty, page_content=True)
 
 
-def save_text(name: str, path: Path, flow: dict, report: dict) -> str:
+def save_text(name: str, path: Path, flow: dict, report: dict, secrets=()) -> str:
     lines = [f"✓ Saved flow {name} for {flow['site']} ({path})"]
     for request in report["requests"]:
         mark = " ← output" if request["id"] == report["output"] else ""
         detail = f", list {request['list']}" if request.get("list") else ""
-        lines.append(f"  {request['id']} GET {flowurl.mask(request['url'])} ({request['kind']}{detail}){mark}")
+        lines.append(f"  {request['id']} GET {flowurl.mask(request['url'], secrets)} ({request['kind']}{detail}){mark}")
     for param in report["params"]:
-        how = f"recorded {param['example']}" if param.get("example") else "no recorded value: runs pass it"
+        shown = param.get("example") and not any(carries(param["example"], secret) for secret in secrets)
+        how = f"recorded {param['example']}" if shown else "no recorded value: runs pass it"
         lines.append(f"  param {param['name']} ({param['source']}; {how})")
     if not report["params"]:
         lines.append("  no params: name a typed or URL value with --param k=v to make one")
-    for step in report["notReplayable"]:
-        lines.append(f"  step {step['seq']} can't be replayed: {step['why']}")
-    if report["redactedSteps"]:
-        lines.append(f"  steps {', '.join(map(str, report['redactedSteps']))} held a secret or an unsafe URL, so the flow never replays them")
     for item in report["dropped"]:
         lines.append(f"  left out {item['id']}: {item['why']}")
     if report["unkept"]:
@@ -852,13 +831,13 @@ async def cmd_flow(ctx, argv):
         command_metrics.flag("flow_saved", True)
         command_metrics.count("flow_requests_kept", len(report["requests"]))
         command_metrics.count("flow_params", len(report["params"]))
-        return Result({"flow": summary(flow), "path": str(path), **report}, save_text(positional[0], path, flow, report))
+        return Result({"flow": summary(flow), "path": str(path), **report}, save_text(positional[0], path, flow, report, log_secrets(log.steps)))
     if action == "run":
         from ardia_cli.browse import flowrun
 
         options, positional = parse(rest, RUN_FLAGS)
         if len(positional) != 1:
-            raise Usage("Usage: ardia browse flow run <name> [--param k=v] [--fields a,b.c] [--where f=v] [--limit n] [--tier page|replay]")
+            raise Usage("Usage: ardia browse flow run <name> [--param k=v] [--fields a,b.c] [--where f=v] [--limit n]")
         page = state.pages.get(state.current) if state.current else None
         site = locate(root, positional[0], options.get("site"), page.url if page else None)
         flow = load(root, site, positional[0])

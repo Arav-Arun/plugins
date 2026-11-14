@@ -361,10 +361,6 @@ async def end(ctx, step: dict | None, error: BrowseError | None = None):
                 pass
         if registered_secret(typed.get("value") or "") or SECRET_HINT.search(typed.get("hint") or ""):
             typed["secret"] = True
-    replaying = state.extras.get("flow_replay")
-    if replaying is not None:
-        replaying.append(step)
-        return
     log_of(state).add(step)
 
 
