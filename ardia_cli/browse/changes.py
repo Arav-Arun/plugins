@@ -607,8 +607,6 @@ class NetworkWatch:
                     "url": clean_url(str(request.get("url") or "")),
                     "raw": str(request.get("url") or ""),
                     "headers": request.get("headers") or {},
-                    "post": request.get("postData"),
-                    "has_post": bool(request.get("hasPostData")),
                     "type": params.get("type") or "Other",
                     "statuses": [],
                     "done": False,

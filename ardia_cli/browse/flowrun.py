@@ -4,9 +4,9 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 from ardia_cli import command_metrics
-from ardia_cli.browse import flowlog, flows
+from ardia_cli.browse import flowlog, flows, flowurl
 from ardia_cli.browse import shape as shaping
-from ardia_cli.browse.commands import Result, normalize_url
+from ardia_cli.browse.commands import Result
 from ardia_cli.browse.errors import BrowseError, ConnectionLost, OutcomeUnknown, Usage
 from ardia_cli.browse.limits import seconds_of
 
@@ -14,17 +14,20 @@ RUN_TIMEOUT = 60.0
 BODY_LIMIT = 8 * 1024 * 1024
 TIERS = ("page", "replay")
 CHALLENGE_SCAN = 20000
-FETCH = """async (url, method, headers, body, timeoutMs, limit) => {
+ALLOWED_METHODS = {"GET", "HEAD"}
+OVERRIDE_HEADERS = {"x-http-method-override", "x-method-override", "x-http-method"}
+BLOCKED_LIMIT = 50
+FETCH = """async (url, headers, timeoutMs, limit) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { method, headers, body: body === null ? undefined : body, credentials: "include", cache: "no-store",
-      redirect: "manual", signal: controller.signal });
+    const response = await fetch(url, { method: "GET", headers, credentials: "include", cache: "no-store", redirect: "manual",
+      signal: controller.signal });
     const text = response.type === "opaqueredirect" ? "" : await response.text();
-    return { sent: true, status: response.status, type: response.type, url: response.url, mime: response.headers.get("content-type") || "",
-      retryAfter: response.headers.get("retry-after"), text: text.length > limit ? null : text, size: text.length };
+    return { status: response.status, type: response.type, url: response.url, mime: response.headers.get("content-type") || "",
+      retryAfter: response.headers.get("retry-after"), text: text.length > limit ? null : text };
   } catch (error) {
-    return { sent: false, error: String(error && error.message || error), aborted: controller.signal.aborted };
+    return { error: String(error && error.message || error) };
   } finally {
     clearTimeout(timer);
   }
@@ -54,34 +57,6 @@ def resolve_params(flow: dict, given: dict) -> dict:
     return values
 
 
-def allowed_writes(value: str | None, flow: dict) -> set:
-    if not value:
-        return set()
-    ids = {write["id"] for write in flow.get("writes") or []}
-    if value.strip() == "all":
-        return ids
-    wanted = {item.strip() for item in value.split(",") if item.strip()}
-    unknown = wanted - ids
-    if unknown:
-        raise Usage(f"--allow-write takes all or write ids of this flow ({', '.join(sorted(ids)) or 'it has none'}), not {', '.join(sorted(unknown))}")
-    return wanted
-
-
-def on_site(flow: dict, url: str) -> bool:
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    if parts.scheme not in ("http", "https"):
-        return False
-    return flowlog.base_domain(parts.hostname or "") == flowlog.base_domain(urlsplit(flow["origin"]).hostname or "")
-
-
-def origin_of(url: str) -> str:
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc.rpartition('@')[2].lower()}"
-
-
 def challenge(text: str | None) -> bool:
     from ardia_cli.browse.readpages import CHALLENGE
 
@@ -101,100 +76,144 @@ def parsed(request: dict, text: str | None):
     return value if isinstance(value, (dict, list)) else None
 
 
-def unknown(message: str, data: dict | None = None) -> BrowseError:
-    return BrowseError(message, data=data, code="outcome_unknown")
-
-
-def classify(flow: dict, request: dict, answer: dict, write: bool) -> Outcome:
+def classify(flow: dict, request: dict, answer: dict) -> Outcome:
     status = answer.get("status")
     if answer.get("error"):
-        if write:
-            return Outcome("stop", error=unknown(f"The write {request['method']} got no answer ({answer['error']}); it may have been applied, "
-                                                 "so it wasn't sent again. Check the site before running it again"))
         return Outcome("next", f"the request failed: {answer['error']}")
     if answer.get("type") == "opaqueredirect" or (status and 300 <= status < 400):
-        if write:
-            return Outcome("stop", error=unknown("The write was answered with a redirect, so whether it was applied is unknown; it wasn't sent "
-                                                 "again. Check the site"))
         return Outcome("next", "the request was redirected, which the page tier doesn't follow")
-    if answer.get("url") and not on_site(flow, answer["url"]):
-        return Outcome("stop", error=BrowseError(f"The request was redirected off {flow['site']}, so its answer was dropped", code="off_site"))
     if status in (401, 403):
         if request.get("strippedAuth"):
-            return Outcome("next", f"HTTP {status}: the recording sent a credential header a flow never keeps", drift=None)
+            return Outcome("next", f"HTTP {status}: the recording sent a credential header a flow never keeps")
         return Outcome("stop", error=BrowseError(f"HTTP {status}: the session is signed out of {flow['site']} or lacks access. Sign in again in "
                                                  "Ardia, then run the flow again", data={"httpStatus": status}, code="auth_expired"))
     if status == 429:
         return Outcome("stop", error=BrowseError(f"HTTP 429: {flow['site']} is rate limiting this session; wait before running it again",
                                                  data={"httpStatus": 429, "retryAfter": answer.get("retryAfter")}, code="rate_limited"))
     html = "html" in (answer.get("mime") or "").lower()
-    if write and (status in (408,) or (status or 0) >= 500):
-        return Outcome("stop", error=BrowseError(f"The write got HTTP {status}; it may have been applied, so it wasn't sent again. Check the site",
-                                                 data={"httpStatus": status}, code="outcome_unknown"))
     if not status or not 200 <= status < 300:
-        if write and status and 400 <= status < 500:
-            return Outcome("next", f"the write was refused with HTTP {status}")
-        if not write and html and challenge(answer.get("text")):
+        if html and challenge(answer.get("text")):
             return Outcome("stop", error=BrowseError(f"{flow['site']} answered with a bot check instead of data; continue in the page or let "
                                                      "the user clear it", data={"httpStatus": status}, code="blocked"))
         if (status or 0) >= 500:
             return Outcome("next", f"HTTP {status}")
-        return Outcome("stop", error=BrowseError(f"HTTP {status} for {request['method']} {urlsplit(request['url']).path}", data={"httpStatus": status},
+        return Outcome("stop", error=BrowseError(f"HTTP {status} for GET {flowurl.mask(request['url'])}", data={"httpStatus": status},
                                                  code="http_error"))
     if answer.get("text") is None:
-        if write:
-            return Outcome("stop", error=unknown("The write was answered, but the answer was too large to read; it wasn't sent again. Check the site"))
         return Outcome("next", "the answer was too large to read")
     if request["kind"] == "json" and html and challenge(answer.get("text")):
-        if write:
-            return Outcome("stop", error=BrowseError("The write was answered with a bot check page; whether it was applied is unknown", code="outcome_unknown"))
         return Outcome("stop", error=BrowseError(f"{flow['site']} answered with a bot check instead of data; continue in the page or let the user "
                                                  "clear it", code="blocked"))
     value = parsed(request, answer.get("text"))
     if value is None:
-        if write:
-            return Outcome("stop", error=BrowseError("The write was answered with something that isn't JSON (a sign-in page?), so whether it was "
-                                                     "applied is unknown", code="outcome_unknown"))
         return Outcome("next", "the answer isn't the recorded JSON any more", drift="the answer isn't JSON")
     changed = flows.drift(request["expect"].get("signature"), value)
     if changed is None and flows.list_gone(request["expect"].get("list"), value):
         changed = f"the list {request['expect']['list']} is gone"
-    if changed and not write:
+    if changed:
         return Outcome("next", f"the answer's shape changed: {changed}", drift=changed)
-    return Outcome("ok", value=value, drift=changed)
+    return Outcome("ok", value=value)
 
 
-async def page_tier(ctx, flow: dict, values: dict, url: str, method: str, headers: dict, body: str | None, write: bool, deadline: float) -> dict:
+def allowed_request(hosts: set, request: dict) -> bool:
+    if str(request.get("method") or "").upper() not in ALLOWED_METHODS:
+        return False
+    if {str(name).lower() for name in (request.get("headers") or {})} & OVERRIDE_HEADERS:
+        return False
+    try:
+        return flowurl.parse(request.get("url")).origin in hosts
+    except flowurl.Unsafe:
+        return False
+
+
+class Interceptor:
+    def __init__(self, page, hosts: set):
+        self.page = page
+        self.hosts = hosts
+        self.blocked: list[dict] = []
+        self.tasks: set = set()
+        self.on = False
+
+    def listener(self, event_page, method, params):
+        if method != "Fetch.requestPaused" or event_page is not self.page:
+            return
+        task = asyncio.ensure_future(self.answer(params))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def answer(self, params: dict):
+        request = params.get("request") or {}
+        request_id = params.get("requestId")
+        if allowed_request(self.hosts, request):
+            reply = ("Fetch.continueRequest", {"requestId": request_id})
+        else:
+            if len(self.blocked) < BLOCKED_LIMIT:
+                self.blocked.append({"method": str(request.get("method") or "?").upper()[:10], "host": flowurl.host_label(request.get("url"))})
+            reply = ("Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"})
+        try:
+            await self.page.send(*reply)
+        except BrowseError:
+            pass
+
+    async def start(self):
+        self.page.state.listeners.append(self.listener)
+        try:
+            await self.page.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+        except BaseException:
+            self.page.state.listeners.remove(self.listener)
+            raise
+        self.on = True
+
+    async def stop(self):
+        if self.tasks:
+            await asyncio.gather(*list(self.tasks), return_exceptions=True)
+        if self.on and self.page.session_id is not None:
+            try:
+                await asyncio.wait_for(self.page.send("Fetch.disable"), 3)
+            except (BrowseError, asyncio.TimeoutError):
+                pass
+        self.on = False
+        if self.listener in self.page.state.listeners:
+            self.page.state.listeners.remove(self.listener)
+
+
+async def page_tier(ctx, flow: dict, values: dict, url: str, headers: dict, deadline: float) -> dict:
     from ardia_cli.browse import readpages, temptabs
 
     state = ctx.state
     loop = asyncio.get_running_loop()
     await state.connect()
-    target = origin_of(url)
+    target = flowurl.parse(url).origin
     current = state.pages.get(state.current) if state.current else None
     opened: list[str] = []
+
+    def origin(page_url: str) -> str | None:
+        try:
+            return flowurl.parse(page_url).origin
+        except flowurl.Unsafe:
+            return None
+
     try:
-        if current is not None and current.session_id and current.url.startswith(("http://", "https://")) and origin_of(current.url) == target:
+        if current is not None and current.session_id and origin(current.url) == target:
             page = current
         else:
             await temptabs.sweep(state)
             page = await readpages.open_reader(state, opened)
             start = flows.fill_url(flow["startUrl"], values)
-            landing = start if origin_of(start) == target and "<redacted>" not in start else target + "/"
+            landing = start if origin(start) == target else target + "/"
             await readpages.goto(ctx, page, landing, max(deadline - loop.time(), 1.0))
-            if not page.url.startswith(("http://", "https://")) or origin_of(page.url) != target:
-                return {"skip": f"the background tab landed on {origin_of(page.url) if page.url.startswith('http') else page.url}, not {target}"}
+            if origin(page.url) != target:
+                return {"skip": f"the background tab landed on {flowurl.host_label(page.url)}, not the request's host"}
         remaining = max(deadline - loop.time(), 1.0)
-        answer = await page.call(FETCH, url, method, headers, body, int(remaining * 1000), BODY_LIMIT, frame=page.main_frame, read=not write,
-                                 timeout=remaining + 5)
+        answer = await page.call(FETCH, url, headers, int(remaining * 1000), BODY_LIMIT, frame=page.main_frame, read=True, timeout=remaining + 5)
         return answer or {"error": "no answer from the page"}
     finally:
         if opened:
             await temptabs.release(state, opened)
 
 
-def same_request(request: dict, url: str, method: str, candidate: dict) -> bool:
-    if candidate.get("method") != method:
+def same_request(url: str, candidate: dict) -> bool:
+    if candidate.get("method") != "GET":
         return False
     try:
         want, got = urlsplit(url), urlsplit(candidate.get("url") or "")
@@ -202,8 +221,7 @@ def same_request(request: dict, url: str, method: str, candidate: dict) -> bool:
         return False
     if (want.netloc.lower(), want.path) != (got.netloc.lower(), got.path):
         return False
-    have = set(parse_qsl(got.query, keep_blank_values=True))
-    return set(parse_qsl(want.query, keep_blank_values=True)) <= have
+    return set(parse_qsl(want.query, keep_blank_values=True)) <= set(parse_qsl(got.query, keep_blank_values=True))
 
 
 def replay_commands(flow: dict, values: dict) -> list[list[str]]:
@@ -211,9 +229,12 @@ def replay_commands(flow: dict, values: dict) -> list[list[str]]:
     for step in flow["steps"]:
         command = [flows.fill_text(part, values) for part in step["command"]]
         if command[0] == "open" and len(command) > 1:
-            command[1] = flows.fill_url(normalize_url(step["command"][1]), values)
-            if not on_site(flow, command[1]):
-                raise BrowseError(f"The recorded `open` goes to {origin_of(command[1])}, off {flow['site']}; save the flow again", code="off_site")
+            command[1] = flows.fill_url(step["command"][1], values)
+            try:
+                if flowurl.parse(command[1]).origin not in flow["hosts"]:
+                    raise flowurl.Unsafe("its host isn't listed")
+            except flowurl.Unsafe:
+                raise BrowseError("A recorded `open` leaves the flow's hosts; save the flow again", code="flow_invalid") from None
         commands.append(command)
     return commands
 
@@ -227,60 +248,81 @@ async def own_tab(state, target_id: str | None):
     return page if await page.takes_input() else None
 
 
-async def replay_tier(ctx, flow: dict, values: dict, request: dict, url: str, allowed: set, deadline: float, replay_note: list) -> dict:
+async def guarded(page, hosts: set) -> Interceptor | str:
+    interceptor = Interceptor(page, hosts)
+    try:
+        await interceptor.start()
+    except ConnectionLost:
+        raise
+    except BrowseError as error:
+        return f"request interception (Fetch.enable) isn't available here: {error.message}"
+    return interceptor
+
+
+async def replay_tier(ctx, flow: dict, values: dict, url: str, deadline: float, notes: list, blocked: list) -> dict:
     from ardia_cli.browse import readpages, temptabs
-    from ardia_cli.browse.daemon import run_one
 
     if not flow.get("replayable"):
         why = [f"step {step['seq']}: {step.get('why')}" for step in flow["steps"] if not step.get("command")]
         if flow.get("redactedSteps"):
-            why.append("a step held a secret, which a flow never stores")
-        return {"skip": "the recorded commands can't be replayed (" + "; ".join(why or ["a URL held a credential"]) + ")"}
-    unallowed = [write["id"] for write in flow.get("writes") or [] if write["id"] not in allowed]
-    if unallowed:
-        return {"skip": f"replaying the commands sends write {', '.join(unallowed)}; pass --allow-write {','.join(unallowed)} to let it"}
+            why.append("a step held a secret or an unsafe URL, which a flow never stores")
+        return {"skip": "the recorded commands can't be replayed (" + "; ".join(why or ["the start URL couldn't be kept"]) + ")"}
+    if ctx.state.extras.get("routes") or ctx.state.extras.get("router"):
+        return {"unavailable": "this session has `network route` on, which owns request interception"}
     commands = replay_commands(flow, values)
     start = flows.fill_url(flow["startUrl"], values)
-    if commands and commands[0][0] != "open" and "<redacted>" in start:
-        return {"skip": "the start URL held a credential, which a flow never stores"}
+    hosts = set(flow["hosts"])
     state = ctx.state
     await state.connect()
     await temptabs.sweep(state)
     previous = state.current
     opened: list[str] = []
     replayed: list[dict] = []
+    interceptor = None
     state.extras["flow_replay"] = replayed
     try:
         page = await readpages.open_reader(state, opened)
+        interceptor = await guarded(page, hosts)
+        if isinstance(interceptor, str):
+            return {"unavailable": interceptor}
         state.current = page.target_id
-        answer = await replay_in(ctx, flow, values, page, commands, start, replayed, deadline)
+        answer = await replay_in(ctx, page, commands, start, deadline)
         if answer.get("needs_input"):
+            blocked.extend(interceptor.blocked)
+            await interceptor.stop()
+            interceptor = None
+            await temptabs.release(state, opened)
             own = await own_tab(state, previous)
             if own is None:
                 return {"skip": "this Ardia doesn't deliver input to background tabs, so the replay needs a tab of this session's that "
                                 "takes input: `ardia browse open <url> --show`, then run the flow again"}
-            await temptabs.release(state, opened)
+            interceptor = await guarded(own, hosts)
+            if isinstance(interceptor, str):
+                return {"unavailable": interceptor}
+            replayed.clear()
             state.current = own.target_id
-            replay_note.append(f"the replay ran in this session's tab [{state.tab_id(own.target_id)}], since background tabs don't take input here")
-            answer = await replay_in(ctx, flow, values, own, commands, start, replayed, deadline)
+            notes.append(f"the replay ran in this session's tab [{state.tab_id(own.target_id)}], since background tabs don't take input here")
+            answer = await replay_in(ctx, own, commands, start, deadline)
         if answer:
             return answer
     finally:
+        if isinstance(interceptor, Interceptor):
+            blocked.extend(interceptor.blocked)
+            await interceptor.stop()
         state.extras.pop("flow_replay", None)
         state.current = previous if previous is None or previous in state.target_infos or previous in state.pages else None
         await temptabs.release(state, opened)
-    found = [candidate for step in replayed for candidate in step.get("requests") or [] if same_request(request, url, request["method"], candidate)]
+    found = [candidate for step in replayed for candidate in step.get("requests") or [] if same_request(url, candidate)]
     if not found:
-        return {"replay_failed": "the replayed commands never sent the recorded request", "maybe_sent": bool(state_writes(replayed))}
+        return {"replay_failed": "the replayed commands never sent the recorded request"}
     answer = found[-1]
-    return {"sent": True, "status": answer.get("status"), "mime": answer.get("mime"), "text": answer.get("text"), "url": answer.get("url"),
-            "extraWrites": len(state_writes(replayed))}
+    return {"status": answer.get("status"), "mime": answer.get("mime"), "text": answer.get("text")}
 
 
-NO_INPUT_NEEDED = {"open", "wait", "back", "forward", "reload", "pushstate"}
+NO_INPUT_NEEDED = {"open", "wait", "back", "forward", "reload"}
 
 
-async def replay_in(ctx, flow: dict, values: dict, page, commands: list, start: str, replayed: list, deadline: float) -> dict:
+async def replay_in(ctx, page, commands: list, start: str, deadline: float) -> dict:
     from ardia_cli.browse import readpages
     from ardia_cli.browse.daemon import run_one
 
@@ -291,57 +333,25 @@ async def replay_in(ctx, flow: dict, values: dict, page, commands: list, start: 
     for command in commands:
         remaining = deadline - loop.time()
         if remaining <= 0:
-            return {"error": "the run's time is up", "maybe_sent": bool(state_writes(replayed))}
+            return {"replay_failed": "the run's time is up"}
         if not checked and command[0] not in NO_INPUT_NEEDED:
             checked = True
             if not await page.takes_input():
-                if state_writes(replayed):
-                    return {"replay_failed": "this tab doesn't take input, and the replay had already sent a write", "maybe_sent": True}
-                replayed.clear()
                 return {"needs_input": True}
         try:
             _, error = await asyncio.wait_for(run_one(ctx, command, {"no_text": True}), remaining)
         except asyncio.TimeoutError:
-            return {"error": f"`{command[0]}` didn't finish in the run's time", "maybe_sent": bool(state_writes(replayed))}
+            return {"replay_failed": f"`{command[0]}` didn't finish in the run's time"}
         if isinstance(error, (OutcomeUnknown, ConnectionLost)):
             raise error
-        extra = unlisted_writes(flow, values, state_writes(replayed))
-        if extra:
-            return {"unlisted": extra, "maybe_sent": True}
         if error is not None:
-            return {"replay_failed": f"`{' '.join(command[:2])}` failed: {error.message}", "maybe_sent": bool(state_writes(replayed))}
-        current = ctx.state.pages.get(ctx.state.current)
-        if current is not None and current.url.startswith("http") and not on_site(flow, current.url):
-            return {"replay_failed": f"the replay left {flow['site']} for {origin_of(current.url)}"}
+            return {"replay_failed": f"`{command[0]}` failed: {error.message}"}
     return {}
-
-
-def state_writes(replayed: list[dict]) -> list:
-    return [write for step in replayed for write in step.get("writes") or []]
-
-
-def write_key(method: str, url: str) -> tuple:
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return (method, "", "")
-    return (str(method).upper(), parts.netloc.lower(), parts.path)
-
-
-def unlisted_writes(flow: dict, values: dict, seen: list[dict]) -> list[str]:
-    listed = {write_key(write["method"], flows.fill_url(write["url"], values)) for write in flow.get("writes") or []}
-    return [f"{write['method']} {urlsplit(write['url']).netloc}{urlsplit(write['url']).path}" for write in seen
-            if write_key(write["method"], write["url"]) not in listed]
-
-
-def write_id(flow: dict, request: dict) -> str | None:
-    return next((write["id"] for write in flow.get("writes") or [] if write.get("request") == request["id"]), None)
 
 
 async def run(ctx, root: Path, flow: dict, options: dict) -> Result:
     values = resolve_params(flow, flows.parse_params(options.get("param")))
     shape = shaping.parse_shape(options.get("fields"), options.get("where"), options.get("limit"))
-    allowed = allowed_writes(options.get("allow_write"), flow)
     tier_choice = options.get("tier")
     if tier_choice and tier_choice not in TIERS:
         raise Usage(f"--tier takes {' or '.join(TIERS)}")
@@ -349,55 +359,46 @@ async def run(ctx, root: Path, flow: dict, options: dict) -> Result:
     if timeout is None:
         raise Usage("--timeout takes 30s, 2m or milliseconds")
     request = flows.output_request(flow)
+    if request.get("method") != "GET":
+        raise BrowseError("Flows are read-only for now; this flow's request isn't a GET, so it wasn't sent. Save it again", code="flow_not_get")
     url = flows.fill_url(request["url"], values)
-    body = flows.fill_body(request.get("body"), request.get("bodyType"), values)
-    if flows.PARAM.search(url + (body or "")):
-        raise BrowseError("A placeholder in the flow has no param to fill it; save the flow again", code="flow_invalid")
-    if not on_site(flow, url) or urlsplit(url).netloc.lower() not in flow["hosts"]:
-        raise BrowseError(f"The flow's request goes to {origin_of(url)}, off {flow['site']}; it wasn't sent", code="off_site")
-    write = flowlog.write_kind(request["method"], url, body) is not None
-    if write:
-        wid = write_id(flow, request)
-        if wid is None:
-            raise BrowseError("With these params the flow's request is a write the recording didn't list, so it wasn't sent; save the flow again",
-                              code="write_not_allowed")
-        if wid not in allowed:
-            raise BrowseError(f"The flow's answer comes from write {wid} ({request['method']} {urlsplit(url).path}); nothing was sent. "
-                              f"Pass --allow-write {wid} to send it", data={"write": wid}, code="write_not_allowed")
+    try:
+        if flowurl.parse(url).origin not in flow["hosts"]:
+            raise flowurl.Unsafe("its host isn't one the flow lists")
+    except flowurl.Unsafe as error:
+        raise BrowseError(f"With these params the flow's request isn't safe to send ({error}); nothing was sent", code="off_site") from None
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     fell_back: list[dict] = []
     notes: list[str] = []
     drifts: list[dict] = []
+    blocked: list[dict] = []
     winner = None
     credential = False
+    unavailable = None
     for tier in [tier_choice] if tier_choice else TIERS:
         if loop.time() >= deadline:
             fell_back.append({"tier": tier, "why": "the run's time is up"})
             break
         if tier == "page":
-            answer = await page_tier(ctx, flow, values, url, request["method"], request.get("headers") or {}, body, write, deadline)
+            answer = await page_tier(ctx, flow, values, url, request.get("headers") or {}, deadline)
         else:
-            answer = await replay_tier(ctx, flow, values, request, url, allowed, deadline, notes)
-        if answer.get("unlisted"):
-            raise unknown(f"The replay sent writes the flow doesn't list ({', '.join(answer['unlisted'][:5])}), so it stopped. Check the site; "
-                          "save the flow again if the page changed", {"writes": answer["unlisted"], "fellBack": fell_back})
+            answer = await replay_tier(ctx, flow, values, url, deadline, notes, blocked)
+        if answer.get("unavailable"):
+            unavailable = answer["unavailable"]
+            fell_back.append({"tier": tier, "why": unavailable})
+            continue
         if answer.get("skip") or answer.get("replay_failed"):
             fell_back.append({"tier": tier, "why": answer.get("skip") or answer["replay_failed"]})
-            if answer.get("maybe_sent"):
-                raise unknown("The replay sent a write before it failed, so nothing was tried again. Check the site", {"fellBack": fell_back})
             continue
-        if answer.get("maybe_sent") and not answer.get("sent"):
-            raise unknown(f"The replay sent a write and then stopped ({answer.get('error') or 'no answer'}), so nothing was tried again. Check the site",
-                          {"fellBack": fell_back})
-        outcome = classify(flow, request, answer, write)
+        outcome = classify(flow, request, answer)
         if outcome.drift:
             drifts.append({"tier": tier, "why": outcome.drift})
         if outcome.kind == "ok":
             winner = (tier, outcome)
             break
         if outcome.kind == "stop":
-            outcome.error.data = {**(outcome.error.data or {}), "tier": tier, "fellBack": fell_back}
+            outcome.error.data = {**(outcome.error.data or {}), "tier": tier, "fellBack": fell_back, "blocked": blocked}
             if drifts:
                 mark(root, flow, False)
             raise outcome.error
@@ -405,19 +406,26 @@ async def run(ctx, root: Path, flow: dict, options: dict) -> Result:
         fell_back.append({"tier": tier, "why": outcome.why})
     if fell_back:
         command_metrics.flag("flow_fell_back", True)
+    if blocked:
+        command_metrics.flag("flow_replay_blocked", True)
+        command_metrics.count("flow_blocked", len(blocked))
     if winner is None:
+        data = {"fellBack": fell_back, "blocked": blocked}
         if drifts:
             mark(root, flow, False)
             command_metrics.flag("flow_drifted", True)
             raise BrowseError(f"{flow['name']} drifted: {drifts[-1]['why']}. Do the task in the page and save the flow again",
-                              data={"fellBack": fell_back, "drift": drifts}, code="drifted")
+                              data={**data, "drift": drifts}, code="drifted")
         if credential:
             raise BrowseError("The request needs a credential header the recording sent, which a flow never keeps, and the replay couldn't get "
-                              "an answer; use the page for this task", data={"fellBack": fell_back}, code="credential_not_sendable")
+                              "an answer; use the page for this task", data=data, code="credential_not_sendable")
+        if unavailable:
+            raise BrowseError(f"{flow['name']} got no answer, and the replay can't run without request interception ({unavailable})",
+                              data=data, code="replay_unavailable")
         reasons = "; ".join(f"{item['tier']}: {item['why']}" for item in fell_back) or "no tier ran"
-        raise BrowseError(f"{flow['name']} got no answer ({reasons})", data={"fellBack": fell_back}, code="flow_failed")
+        raise BrowseError(f"{flow['name']} got no answer ({reasons})", data=data, code="flow_failed")
     tier, outcome = winner
-    verified = not drifts
+    verified = not drifts and not blocked
     mark(root, flow, verified)
     command_metrics.flag(f"flow_run_{tier}", True)
     command_metrics.flag("flow_shaped", not shape.empty)
@@ -426,12 +434,13 @@ async def run(ctx, root: Path, flow: dict, options: dict) -> Result:
     shaped = shaping.apply(outcome.value, shape, always=True, path=request["expect"].get("list"))
     if shaped.get("items") is not None:
         command_metrics.count("flow_items", len(shaped["items"]))
-    data = {"flow": flow["name"], "site": flow["site"], "tier": tier, "verified": verified, "fellBack": fell_back, "result": shaped}
+    data = {"flow": flow["name"], "site": flow["site"], "tier": tier, "verified": verified, "fellBack": fell_back, "blocked": blocked, "result": shaped}
     if drifts:
         data["drift"] = drifts
     if notes:
         data["notes"] = notes
-    return Result(data, "\n".join([run_text(flow, tier, shaped, fell_back, drifts), *(f"→ {note}" for note in notes)]), page_content=True)
+    text = run_text(flow, tier, shaped, fell_back, drifts, blocked)
+    return Result(data, "\n".join([text, *(f"→ {note}" for note in notes)]), page_content=True)
 
 
 def mark(root: Path, flow: dict, verified: bool):
@@ -444,7 +453,7 @@ def mark(root: Path, flow: dict, verified: bool):
         pass
 
 
-def run_text(flow: dict, tier: str, shaped: dict, fell_back: list, drifts: list) -> str:
+def run_text(flow: dict, tier: str, shaped: dict, fell_back: list, drifts: list, blocked: list) -> str:
     from ardia_cli.browse.commands import render_json
 
     if shaped.get("items") is None:
@@ -455,6 +464,10 @@ def run_text(flow: dict, tier: str, shaped: dict, fell_back: list, drifts: list)
         counted = f"{len(shaped['items'])} of {shaped['matched']} matching" if shaped["matched"] != shaped["total"] else f"{len(shaped['items'])} of {shaped['total']}"
         head = f"✓ {flow['name']} via {tier}: {counted} items{where}"
         body = render_json(shaped["items"]) if shaped["items"] else "(no items)"
-    notes = [f"→ {item['tier']} tier skipped: {item['why']}" for item in fell_back]
-    notes += [f"→ the {item['tier']} tier saw the shape change ({item['why']}); the flow is marked unverified, save it again" for item in drifts]
-    return "\n".join([head, body, *notes])
+    lines = [head, body]
+    lines += [f"→ {item['tier']} tier skipped: {item['why']}" for item in fell_back]
+    lines += [f"→ the {item['tier']} tier saw the shape change ({item['why']}); the flow is marked unverified, save it again" for item in drifts]
+    if blocked:
+        listed = ", ".join(f"{item['method']} {item['host']}" for item in blocked[:10]) + (" …" if len(blocked) > 10 else "")
+        lines.append(f"→ blocked during the replay (flows only send GETs to their own hosts): {listed}; the run is unverified")
+    return "\n".join(lines)

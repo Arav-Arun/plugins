@@ -38,9 +38,19 @@ def free_port() -> int:
 
 
 SERVE = (
-    "import http.server, socketserver, sys\n"
+    "import http.server, socketserver, sys, urllib.parse\n"
+    "class Handler(http.server.SimpleHTTPRequestHandler):\n"
+    "    def do_GET(self):\n"
+    "        parts = urllib.parse.urlsplit(self.path)\n"
+    "        if parts.path == '/redirect':\n"
+    "            self.send_response(302)\n"
+    "            self.send_header('Location', urllib.parse.parse_qs(parts.query)['to'][0])\n"
+    "            self.send_header('Content-Length', '0')\n"
+    "            self.end_headers()\n"
+    "            return\n"
+    "        super().do_GET()\n"
     "socketserver.TCPServer.allow_reuse_address = True\n"
-    "socketserver.ThreadingTCPServer(('127.0.0.1', int(sys.argv[1])), http.server.SimpleHTTPRequestHandler).serve_forever()\n"
+    "socketserver.ThreadingTCPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()\n"
 )
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -466,7 +476,10 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertNotIn("# saved flows", self.browse("snapshot", "-i", session="flows-other").stdout)
         self.assertIn(f'{site}  search(q) [saved description: "Search the fixture shop"]', self.browse("flow", "list", session=session).stdout)
         replayed = json.loads(self.browse("flow", "run", "search", "--param", "q=toaster", "--tier", "replay", "--json", session=session).stdout)["data"]
-        self.assertEqual((replayed["tier"], replayed["result"]["total"]), ("replay", 3))
+        self.assertEqual((replayed["tier"], replayed["result"]["total"], replayed["verified"]), ("replay", 3, False))
+        self.assertIn({"method": "POST", "host": site}, replayed["blocked"])
+        self.assertIn({"method": "GET", "host": f"localhost:{self.http_port}"}, replayed["blocked"])
+        self.assertNotIn({"method": "GET", "host": site}, replayed["blocked"])
         self.assertEqual(self.browse("flow", "steps", session=session).stdout, "Nothing recorded since the last save\n")
         self.assertIn("Removed flow search", self.browse("flow", "rm", "search", session=session).stdout)
         self.assertFalse(path.exists())
@@ -1209,6 +1222,9 @@ class BrowseTokenPath(unittest.TestCase):
         ran = json.loads(self.browse("flow", "run", "token-search", "--param", "q=toaster", "--fields", "title", "--json",
                                      session="token-flows-other").stdout)["data"]
         self.assertEqual((ran["tier"], ran["result"]["total"], ran["result"]["items"][0]), ("page", 3, {"title": "Two-slot toaster"}))
+        refused = json.loads(self.browse("flow", "run", "token-search", "--param", "q=toaster", "--tier", "replay", "--json", session=session,
+                                         check=False).stdout)
+        self.assertEqual(refused["code"], "replay_unavailable", refused)
         self.browse("flow", "rm", "token-search", session=session)
 
     def test_html5_drag_over_the_token_policy(self):
