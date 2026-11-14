@@ -772,6 +772,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn("A signup popup was in the way", said)
         self.assertEqual(json.loads(self.browse("get", "text", "#report", session=session).stdout), {"clicked": ["buy"], "closed": True})
 
+    def test_click_dismisses_a_long_consentmanager_box(self):
+        session = "cmpbox"
+        self.browse("open", self.url("cmpbox.html"), "--show", session=session)
+        said = self.browse("click", "#search", session=session).stdout
+        self.assertIn('"Reject all" button was clicked (reject)', said)
+        self.assertEqual(json.loads(self.browse("get", "text", "#report", session=session).stdout), {"clicked": ["search"], "choice": "reject"})
+
     def test_click_leaves_a_dialog_that_is_not_about_cookies_alone(self):
         session = "invite"
         self.browse("open", self.url("invite.html"), "--show", session=session)
