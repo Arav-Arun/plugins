@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from ardia_cli.browse.errors import BrowseError, ConnectionLost, Usage
 
 STEP_LIMIT = 200
+SECRET_LIMIT = 200
 BODY_BUDGET = 16 * 1024 * 1024
 BODY_LIMIT = 2 * 1024 * 1024
 BODIES_PER_STEP = 8
@@ -18,7 +19,7 @@ RECORDED = {"open", "click", "dblclick", "fill", "type", "press", "keyboard", "s
             "reload", "scroll", "scrollintoview", "hover", "focus", "wait", "pushstate"}
 ON_ELEMENT = {"click", "dblclick", "fill", "type", "select", "check", "uncheck", "hover", "focus", "scrollintoview"}
 TYPING = {"fill", "type"}
-KEPT_HEADERS = ("accept", "x-requested-with")
+KEPT_HEADERS = ("accept",)
 CREDENTIAL_HEADER = re.compile(r"^(authorization|proxy-authorization|cookie)$|token|csrf|xsrf|api-?key|secret|session|signature|^x-auth", re.I)
 NO_HUMANIZE = {"--no-humanize": "bool"}
 COMMAND_FLAGS = {
@@ -50,10 +51,23 @@ class Log:
         self.saved_through = 0
         self.body_bytes = 0
         self.dropped = 0
+        self.secrets: list[str] = []
+
+    def known_secrets(self) -> list[str]:
+        found = list(self.secrets)
+        for step in self.steps:
+            typed = step.get("typed") or {}
+            if typed.get("secret") and typed.get("value") and typed["value"] not in found:
+                found.append(typed["value"])
+        return found
 
     def add(self, step: dict):
         self.seq += 1
         step["seq"] = self.seq
+        typed = step.get("typed") or {}
+        if typed.get("secret") and typed.get("value") and typed["value"] not in self.secrets:
+            self.secrets.append(typed["value"])
+            del self.secrets[:-SECRET_LIMIT]
         for index, request in enumerate(step.get("requests") or [], 1):
             request["id"] = f"s{self.seq}r{index}"
             self.body_bytes += request.get("bytes") or 0

@@ -403,5 +403,85 @@ class ListingTest(unittest.TestCase):
             self.assertIn("search(q)", text)
 
 
+class FinalPassTest(unittest.TestCase):
+    def test_secrets_typed_before_the_saved_range_still_count(self):
+        log = flowlog.Log()
+        for step in search_steps("swordfish", secret=True, requests=[]):
+            log.add(step)
+        log.add({"command": ["open", "https://shop.example.com/list"], "replay": ["open", "https://shop.example.com/list"], "before": "",
+                 "url": "https://shop.example.com/list", "ok": True,
+                 "requests": [request("https://shop.example.com/api/list?value=swordfish", SEARCH),
+                              request("https://shop.example.com/api/other", SEARCH)]})
+        steps = flows.save_range(log, 4, None)
+        self.assertEqual([step["seq"] for step in steps], [4])
+        flow, report = flows.build_flow("x", steps, known_secrets=log.known_secrets())
+        self.assertEqual([item["id"] for item in report["dropped"]], ["s4r1"])
+        self.assertNotIn("swordfish", json.dumps(flow) + flows.show_text(flow))
+        for _ in range(flowlog.STEP_LIMIT + 5):
+            log.add({"command": ["scroll"], "url": "https://shop.example.com/list", "ok": True, "requests": []})
+        self.assertIn("swordfish", log.known_secrets())
+
+    def test_secret_query_keys_and_headers_are_caught(self):
+        self.assertEqual(flowurl.mask("https://shop.example.com/api?swordfish=1", ["swordfish"]), "https://shop.example.com/api?<hidden>=1")
+        ids, text, _ = kept_ids(with_requests(request("https://shop.example.com/api?swordfish=1", SEARCH), typed="swordfish", secret=True))
+        self.assertEqual(ids, ["s3r2"])
+        ids, text, report = kept_ids(with_requests(request("https://shop.example.com/api/a", SEARCH, headers={"accept": "swordfish"}),
+                                                   typed="swordfish", secret=True))
+        self.assertEqual(ids, ["s3r2"])
+        self.assertNotIn("swordfish", text)
+
+    def test_only_a_safelisted_accept_header_is_kept_or_sent(self):
+        steps = search_steps(requests=[request("https://shop.example.com/api/a?q=kettle", SEARCH,
+                                               headers={"accept": "application/json", "x-requested-with": "XMLHttpRequest"})])
+        flow, _ = flows.build_flow("x", steps)
+        self.assertEqual(flows.output_request(flow)["headers"], {"accept": "application/json"})
+        crafted = json.loads(json.dumps(flow))
+        crafted["steps"][2]["requests"][0]["headers"]["x-requested-with"] = "XMLHttpRequest"
+        with self.assertRaises(BrowseError):
+            flows.validate(crafted)
+        self.assertEqual(flowlog.kept_headers({"Accept": "*/*", "X-Requested-With": "XMLHttpRequest"})[0], {"accept": "*/*"})
+
+    def tier(self, current_owned: bool, borrowed: bool, call):
+        flow, _ = flows.build_flow("search", search_steps())
+        user_tab = mock.Mock(target_id="t1", session_id="s1", url="https://api.example.com/v1", main_frame="f", call=mock.AsyncMock(return_value={"x": 1}))
+        temp_tab = mock.Mock(target_id="t2", session_id="s2", url="https://shop.example.com/search", main_frame="f", call=call)
+        state = mock.Mock(pages={"t1": user_tab}, current="t1", opened={"t1"} if current_owned else set(),
+                          extras={"attached": "t1"} if borrowed else {}, connect=mock.AsyncMock())
+        ctx = mock.Mock(state=state)
+        with mock.patch("ardia_cli.browse.readpages.open_reader", mock.AsyncMock(return_value=temp_tab)), \
+                mock.patch("ardia_cli.browse.readpages.goto", mock.AsyncMock()), \
+                mock.patch("ardia_cli.browse.temptabs.sweep", mock.AsyncMock()), \
+                mock.patch("ardia_cli.browse.temptabs.release", mock.AsyncMock()):
+            answer = asyncio.run(flowrun.page_tier(ctx, flow, {"q": "x"}, "https://api.example.com/v1/search?q=x&page=1",
+                                                   {"accept": "application/json", "x-requested-with": "XMLHttpRequest"}, 1e12))
+        return answer, user_tab, temp_tab
+
+    def test_a_run_never_fetches_through_the_users_tab(self):
+        for owned, borrowed in ((True, True), (False, False)):
+            answer, user_tab, temp_tab = self.tier(owned, borrowed, mock.AsyncMock(return_value={"status": 200}))
+            user_tab.call.assert_not_called()
+            temp_tab.call.assert_called_once()
+        answer, user_tab, temp_tab = self.tier(True, False, mock.AsyncMock())
+        user_tab.call.assert_called_once()
+
+    def test_the_get_is_sent_once_without_custom_headers(self):
+        call = mock.AsyncMock(return_value={"status": 200})
+        self.tier(False, False, call)
+        args, kwargs = call.call_args
+        self.assertFalse(kwargs["read"])
+        self.assertEqual(args[2], {"accept": "application/json"})
+        from ardia_cli.browse.errors import OutcomeUnknown
+
+        answer, _, _ = self.tier(False, False, mock.AsyncMock(side_effect=OutcomeUnknown("the page script", "the page changed document")))
+        self.assertEqual(answer, {"interrupted": True})
+        flow, _ = flows.build_flow("search", search_steps())
+        with tempfile.TemporaryDirectory() as folder:
+            flows.save(Path(folder), flow)
+            with mock.patch.object(flowrun, "page_tier", mock.AsyncMock(return_value={"interrupted": True})):
+                with self.assertRaises(BrowseError) as caught:
+                    asyncio.run(flowrun.run(mock.Mock(), Path(folder), flow, {"param": ["q=x"]}))
+            self.assertEqual(caught.exception.code, "fetch_interrupted")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,7 @@ FIELDS = {"version", "name", "description", "site", "origin", "startUrl", "hosts
 REQUIRED = ("version", "name", "site", "origin", "startUrl", "hosts", "params", "output", "steps")
 STEP_FIELDS = {"seq", "command", "url", "ok", "requests"}
 REQUEST_FIELDS = {"id", "method", "url", "headers", "kind", "expect", "strippedAuth"}
-KEPT_HEADERS = {"accept", "x-requested-with"}
+KEPT_HEADERS = {"accept"}
 HEADER_VALUE = re.compile(r"[A-Za-z0-9/*+.,;= -]{0,100}")
 SAVE_FLAGS = {"--from": "value", "--to": "value", "--param": "multi", "--output": "value", "--description": "value"}
 RUN_FLAGS = {"--param": "multi", "--fields": "value", "--where": "multi", "--limit": "value", "--site": "value", "--timeout": "value"}
@@ -256,7 +256,7 @@ def unsafe_reason(url: str, values: list[tuple[str, str]], secrets: list[str]) -
 
 
 def build_flow(name: str, steps: list[dict], given: dict | None = None, output: str | None = None, description: str | None = None,
-               tool_version: str = "") -> tuple[dict, dict]:
+               tool_version: str = "", known_secrets=()) -> tuple[dict, dict]:
     given = dict(given or {})
     check_name(name)
     if not steps:
@@ -267,7 +267,7 @@ def build_flow(name: str, steps: list[dict], given: dict | None = None, output: 
         raise BrowseError(f"flow save needs a range that starts on a plain web page ({error}): begin it with `open <url>` or pick it with --from",
                           code="not_a_web_page") from None
     site = site_of(start.text)
-    secrets = [step["typed"]["value"] for step in steps if (step.get("typed") or {}).get("secret") and step["typed"].get("value")]
+    secrets = list(dict.fromkeys([*known_secrets, *log_secrets(steps)]))
     params: list[dict] = []
     named: dict[str, str] = {}
 
@@ -341,6 +341,9 @@ def build_flow(name: str, steps: list[dict], given: dict | None = None, output: 
                 hosts.add(parsed.origin)
     for step, request in captured:
         url = safe_url(request["url"], values, secrets, start)
+        if url is not None and any(carries(f"{key} {value}", secret) for key, value in (request.get("headers") or {}).items() for secret in secrets):
+            dropped.append({"id": request["id"], "why": "a header it sent carries a value typed into a secret field"})
+            continue
         if url is None:
             dropped.append({"id": request["id"], "why": unsafe_reason(request["url"], values, secrets)})
             continue
@@ -770,7 +773,7 @@ def step_line(step: dict, secrets=()) -> list[str]:
 
 
 def steps_result(log: flowlog.Log, everything: bool) -> Result:
-    secrets = log_secrets(log.steps)
+    secrets = log.known_secrets()
     steps = [step for step in log.steps if everything or step["seq"] > log.saved_through]
     rows = [{"seq": step["seq"], "command": shown_command(step, secrets), "url": flowurl.mask(step["url"], secrets) if step.get("url") else None,
              "ok": step.get("ok", True),
@@ -823,7 +826,8 @@ async def cmd_flow(ctx, argv):
         if len(positional) != 1:
             raise Usage("Usage: ardia browse flow save <name> [--from n] [--to n] [--param k=v] [--output id] [--description text]")
         steps = save_range(log, seq_of(options.get("from"), "--from"), seq_of(options.get("to"), "--to"))
-        flow, report = build_flow(positional[0], steps, parse_params(options.get("param")), options.get("output"), options.get("description"), __version__)
+        flow, report = build_flow(positional[0], steps, parse_params(options.get("param")), options.get("output"), options.get("description"), __version__,
+                                  log.known_secrets())
         validate(flow)
         path = save(root, flow)
         log.saved_through = max(log.saved_through, steps[-1]["seq"])
@@ -831,7 +835,7 @@ async def cmd_flow(ctx, argv):
         command_metrics.flag("flow_saved", True)
         command_metrics.count("flow_requests_kept", len(report["requests"]))
         command_metrics.count("flow_params", len(report["params"]))
-        return Result({"flow": summary(flow), "path": str(path), **report}, save_text(positional[0], path, flow, report, log_secrets(log.steps)))
+        return Result({"flow": summary(flow), "path": str(path), **report}, save_text(positional[0], path, flow, report, log.known_secrets()))
     if action == "run":
         from ardia_cli.browse import flowrun
 

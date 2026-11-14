@@ -34,7 +34,7 @@ ardia browse flow run search --param q=toaster --fields title,price --limit 5
 | `auth_expired`, `redirected` | ask the user to sign in again in Ardia and rerun, or do the task in the page |
 | `blocked`, `rate_limited` | wait, or do the task in the page |
 | `drifted` | the site changed: do it in the page and `flow save` again |
-| `fetch_failed`, `http_error` | do the task in the page |
+| `fetch_failed`, `fetch_interrupted`, `http_error` | do the task in the page (after `fetch_interrupted`, check whether it went through) |
 | `flow_not_get` | the answer came from a POST: flows can't hold it, do it in the page |
 
 Flows never store cookies, auth headers, request bodies, what was typed into a password, card or code field, or a URL

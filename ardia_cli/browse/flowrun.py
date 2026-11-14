@@ -6,7 +6,7 @@ from ardia_cli import command_metrics
 from ardia_cli.browse import flowlog, flows, flowurl
 from ardia_cli.browse import shape as shaping
 from ardia_cli.browse.commands import Result
-from ardia_cli.browse.errors import BrowseError, Usage
+from ardia_cli.browse.errors import BrowseError, OutcomeUnknown, Usage
 from ardia_cli.browse.limits import seconds_of
 
 RUN_TIMEOUT = 60.0
@@ -115,6 +115,7 @@ def classify(flow: dict, request: dict, answer: dict) -> Outcome:
 
 async def page_tier(ctx, flow: dict, values: dict, url: str, headers: dict, deadline: float) -> dict:
     from ardia_cli.browse import readpages, temptabs
+    from ardia_cli.browse.commands import borrowed_tab
 
     state = ctx.state
     loop = asyncio.get_running_loop()
@@ -132,7 +133,8 @@ async def page_tier(ctx, flow: dict, values: dict, url: str, headers: dict, dead
             return None
 
     try:
-        if current is not None and current.session_id and origin(current.url) in (target, home):
+        own = current is not None and current.target_id in state.opened and borrowed_tab(state) != current.target_id
+        if own and current.session_id and origin(current.url) in (target, home):
             page = current
         else:
             await temptabs.sweep(state)
@@ -141,7 +143,15 @@ async def page_tier(ctx, flow: dict, values: dict, url: str, headers: dict, dead
             if origin(page.url) not in flow["hosts"]:
                 return {"landed": flowurl.host_label(page.url)}
         remaining = max(deadline - loop.time(), 1.0)
-        answer = await page.call(FETCH, url, headers, int(remaining * 1000), BODY_LIMIT, frame=page.main_frame, read=True, timeout=remaining + 5)
+        sent = {key: value for key, value in headers.items() if key == "accept" and flows.header_ok(key, value)}
+        try:
+            answer = await page.call(FETCH, url, sent, int(remaining * 1000), BODY_LIMIT, frame=page.main_frame, read=False, timeout=remaining + 5)
+        except OutcomeUnknown:
+            return {"interrupted": True}
+        except BrowseError as error:
+            if error.code in ("document_changed", "page_navigated", "tab_detached"):
+                return {"interrupted": True}
+            raise
         return answer or {"error": "no answer from the page"}
     finally:
         if opened:
@@ -168,6 +178,9 @@ async def run(ctx, root: Path, flow: dict, options: dict) -> Result:
     if answer.get("landed"):
         raise BrowseError(f"The flow's start page went to {answer['landed']}, off {flow['site']} (a sign-in page?). Sign in, or drive the page "
                           "yourself (open, click, read)", data={"landed": answer["landed"]}, code="redirected")
+    if answer.get("interrupted"):
+        raise BrowseError("The page navigated or closed while the flow's GET was in flight, so whether it reached the site is unknown and it "
+                          "wasn't sent again. Drive the page yourself (open, click, read) for this task", code="fetch_interrupted")
     outcome = classify(flow, request, answer)
     if outcome.kind != "ok":
         if outcome.drift:
