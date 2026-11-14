@@ -145,7 +145,7 @@ async def wait_for_load(page, loader: str | None, timeout: float, until: str = "
                 state = await page.call("() => document.readyState", frame=main, read=True)
             except BrowseError as error:
                 if error.code == "tab_detached":
-                    raise
+                    await page.state.reattach(page)
                 return False
             frame_loader = page.loader(main)
             if loader is not None and frame_loader != loader:
@@ -190,6 +190,7 @@ async def navigate(ctx: Ctx, page, url: str, until: str = "load"):
                                     "its content so far is here, and `wait --load load` waits for the rest")
     else:
         await readpages.after_same_document(page, before, asyncio.get_running_loop().time() + ctx.timeout)
+    await page.state.reattach(page)
     await page.refresh_frames()
 
 
@@ -430,6 +431,7 @@ async def cmd_open(ctx: Ctx, argv):
         await changes.settled(page, lambda: navigate(ctx, page, url))
     elif url and not fresh_tab:
         await navigate(ctx, page, url)
+    page = await state.reattach(page)
     if show and (reporting or not fresh_tab):
         page = await show_tab(ctx, page)
     background = await page.takes_input() if fresh_tab and not show else None

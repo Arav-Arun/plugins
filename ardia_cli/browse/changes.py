@@ -676,7 +676,7 @@ class NetworkWatch:
         self.enabled_here = False
         if self.page.network_on or self.page.session_id is None:
             return
-        cleanup = asyncio.ensure_future(self.disable(self.page.session_id))
+        cleanup = asyncio.ensure_future(self.disable())
         cancelled = False
         while not cleanup.done():
             try:
@@ -686,19 +686,11 @@ class NetworkWatch:
         if cancelled:
             raise asyncio.CancelledError
 
-    async def disable(self, session: str):
+    async def disable(self):
         try:
             await asyncio.wait_for(self.page.send("Network.disable"), STOP_TIMEOUT)
-            return
         except Exception:
-            pass
-        if self.page.session_id != session:
-            return
-        self.page.detach()
-        try:
-            await asyncio.wait_for(self.page.browser.send("Target.detachFromTarget", {"sessionId": session}), STOP_TIMEOUT)
-        except Exception:
-            pass
+            command_metrics.flag("network_disable_unconfirmed", True)
 
     def writes(self) -> list[dict]:
         rows = []
@@ -818,6 +810,7 @@ async def observe(ctx, page, run, react=None):
     finally:
         await watch.stop()
     try:
+        await state.reattach(page)
         await page.refresh_frames()
         nodes = await snapshot.collect(state, page)
         state.set_refs(snapshot.refs_of(state, page, nodes), None, page)

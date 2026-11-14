@@ -430,7 +430,7 @@ class NetworkWatchTest(unittest.TestCase):
 
         self.assertTrue(run(go()).enabled)
 
-    def test_an_unconfirmed_disable_drops_the_cdp_session(self):
+    def test_an_unconfirmed_disable_keeps_the_cdp_session_for_the_rest_of_the_command(self):
         detached = []
 
         class Failing(WatchPage):
@@ -459,8 +459,9 @@ class NetworkWatchTest(unittest.TestCase):
             return page
 
         page = run(go())
-        self.assertIsNone(page.session_id)
-        self.assertEqual(detached, [("Target.detachFromTarget", {"sessionId": "S"})])
+        self.assertEqual(page.session_id, "S")
+        self.assertEqual(page.sent, ["Network.enable", "Network.disable"])
+        self.assertEqual(detached, [])
 
     def test_capture_already_on_is_left_on(self):
         async def go():

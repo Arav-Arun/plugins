@@ -282,6 +282,21 @@ class State:
         command_metrics.spent("attach_ms", started)
         return page
 
+    async def reattach(self, page: Page) -> Page:
+        if page.session_id is not None and page.browser is self.browser:
+            return page
+        from ardia_cli.browse.errors import CdpError
+        from ardia_cli.browse.page import DETACHED
+
+        if self.pages.get(page.target_id) is not page or page.target_id not in self.target_infos:
+            raise BrowseError(DETACHED, code="tab_detached")
+        try:
+            await page.attach(self.browser)
+        except CdpError:
+            raise BrowseError(DETACHED, code="tab_detached") from None
+        command_metrics.flag("reattached_after_detach", True)
+        return page
+
     async def follow_lost_tab(self) -> str:
         lost = self.extras.get("lost_tab") or {}
         gone = f" [{lost['tab']}]" if lost.get("tab") else ""
