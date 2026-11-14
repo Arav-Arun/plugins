@@ -765,6 +765,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn('"Reject All" button was clicked (reject)', said)
         self.assertEqual(json.loads(self.browse("get", "text", "#report", session=session).stdout), {"clicked": ["search"], "choice": "reject"})
 
+    def test_click_closes_a_signup_popup_in_the_way_without_signing_up(self):
+        session = "signup"
+        self.browse("open", self.url("signup.html"), "--show", session=session)
+        said = self.browse("click", "#buy", session=session).stdout
+        self.assertIn("A signup popup was in the way", said)
+        self.assertEqual(json.loads(self.browse("get", "text", "#report", session=session).stdout), {"clicked": ["buy"], "closed": True})
+
     def test_click_leaves_a_dialog_that_is_not_about_cookies_alone(self):
         session = "invite"
         self.browse("open", self.url("invite.html"), "--show", session=session)

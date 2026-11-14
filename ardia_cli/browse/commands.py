@@ -623,7 +623,7 @@ def consent_note(ctx: Ctx, result: Result) -> Result:
     note, ctx.state.consent_dismissed = ctx.state.consent_dismissed, None
     if note:
         result.data["dismissed"] = note
-        result.text = f"{result.text or '✓ Done'}\nA consent banner was in the way: {note}"
+        result.text = f"{result.text or '✓ Done'}\n{note}"
     fallback, ctx.state.click_note = getattr(ctx.state, "click_note", None), None
     if fallback:
         result.data["domClick"] = fallback

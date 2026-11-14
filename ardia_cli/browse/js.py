@@ -295,9 +295,29 @@ LIBRARY = r"""
         }
         if (best && best.rank === 0) break;
       }
-      if (!best) return null;
+      if (!best) {
+        const signup = /\b(newsletter|subscribe|sign ?up|join|discount|coupon|offer|deal|email)\b|\d+ ?% ?off\b/i;
+        const dismiss = /^(close|dismiss|no,? thanks?|no thank you|not now|maybe later|skip|×|✕|✖)$/i;
+        const popups = backdrop ? [...roots, ...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open]")] : roots;
+        for (const root of popups) {
+          if (!api.visible(root)) continue;
+          const text = (root.innerText || "").slice(0, 3001);
+          if (text.length > 3000 || !(root.querySelector("input[type=email]") || signup.test(text))) continue;
+          for (const button of root.querySelectorAll("button, [role=button], a, input[type=button]")) {
+            if (!api.visible(button)) continue;
+            const shown = ((button.innerText || button.value || "").trim()).replace(/\s+/g, " ");
+            const label = (button.getAttribute("aria-label") || button.getAttribute("title") || "").trim();
+            const name = shown || label;
+            if (dismiss.test(shown) || (shown.length <= 2 && /^(close|dismiss)\b/i.test(label))) {
+              button.click();
+              return { name: name || "close", choice: "close", kind: "popup", layer: api.describe(root) };
+            }
+          }
+        }
+        return null;
+      }
       best.button.click();
-      return { name: best.name, choice: ["reject", "accept", "close"][best.rank], layer: api.describe(best.root) };
+      return { name: best.name, choice: ["reject", "accept", "close"][best.rank], kind: "consent", layer: api.describe(best.root) };
     },
     clickables(root) {
       const out = [];
