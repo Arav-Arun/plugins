@@ -589,12 +589,18 @@ class NetworkWatch:
         self.records: dict[str, dict] = {}
         self.order: list[str] = []
         self.last_event = 0.0
+        self.counting = False
+        self.earlier: set[str] = set()
 
     def listener(self, event_page, method, params):
         if event_page is not self.page or not method.startswith("Network."):
             return
         request_id = params.get("requestId")
         if not request_id:
+            return
+        if not self.counting or request_id in self.earlier:
+            self.earlier.add(request_id)
+            command_metrics.flag("earlier_requests_ignored", True)
             return
         loop = asyncio.get_running_loop()
         self.last_event = loop.time()
@@ -634,10 +640,12 @@ class NetworkWatch:
         self.watching = True
         self.last_event = asyncio.get_running_loop().time()
         if self.page.network_on:
+            self.counting = True
             return
         self.enabled_here = True
         try:
             await self.page.send("Network.enable", {"maxTotalBufferSize": WATCH_BUFFER, "maxResourceBufferSize": WATCH_BUFFER})
+            self.counting = True
         except BrowseError as error:
             if isinstance(error, (CdpError, Gated)):
                 self.enabled_here = False

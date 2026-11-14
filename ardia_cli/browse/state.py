@@ -222,7 +222,7 @@ class State:
             page = self.sessions.get(session_id)
             if page is not None:
                 if method == "Inspector.detached":
-                    page.detach()
+                    command_metrics.flag("renderer_exit_kept_session", True)
                     return
                 if method == "Inspector.targetCrashed":
                     page.mark_crashed()
