@@ -861,6 +861,19 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertNotEqual(moved.returncode, 0)
         self.assertIn("Stale ref", moved.stderr)
 
+    def test_read_marks_blocks_that_are_not_the_main_content(self):
+        out = self.browse("read", self.url("product.html"), session="product").stdout
+        self.assertIn("[navigation: not the main content]", out)
+        self.assertIn("[Recently viewed: not the main content]", out)
+        self.assertIn("Glass kettle $25.00", out)
+        self.assertIn("[end of Recently viewed]", out)
+        self.assertIn("[related items: not the main content]", out)
+        self.assertIn("# Steel kettle", out)
+        self.assertIn("Capacity 1.7 L", out)
+        self.assertNotIn("[Specifications", out)
+        self.assertIn("[Customers also bought: not the main content]", out)
+        self.assertLess(out.index("$39.00"), out.index("[Recently viewed"))
+
     def test_read_keeps_the_labels_of_icons_beside_values(self):
         out = self.browse("read", self.url("iconlabels.html"), session="iconlabels").stdout
         self.assertIn("[Customer care] 1-800-111-2222", out)

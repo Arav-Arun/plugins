@@ -362,6 +362,24 @@ LIBRARY = r"""
       root = root || document.body || document.documentElement;
       const lines = [];
       const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "HEAD", "IFRAME"]);
+      const ASIDE_TITLE = /^(related|recently viewed|you (may|might) also like|similar (items|products)|sponsored|recommended|customers (also|who)|more (from|like this)|frequently bought|people also)/i;
+      const ASIDE_NAME = /(^|[-_\s])(related|recently-?viewed|recommend\w*|sponsored|similar-?(items|products)|also-?(bought|viewed))([-_\s]|$)/i;
+      const asideLabel = (el) => {
+        const tag = el.tagName, role = roleOf(el);
+        if (tag === "NAV" || role === "navigation") return "navigation";
+        const label = norm(el.getAttribute("aria-label") || "");
+        if (label && ASIDE_TITLE.test(label)) return label;
+        const first = el.firstElementChild;
+        const isHeading = (node) => !!node && /^H[2-4]$/.test(node.tagName);
+        const heading = isHeading(first) ? first : first && isHeading(first.firstElementChild) ? first.firstElementChild : null;
+        const title = heading ? norm(heading.innerText || "") : "";
+        if (title && ASIDE_TITLE.test(title) && title.length <= 60) return title;
+        const names = (el.id || "") + " " + (typeof el.className === "string" ? el.className : "");
+        if (ASIDE_NAME.test(names) && /^(SECTION|DIV|ASIDE|UL)$/.test(tag)) return title || "related items";
+        if (tag === "ASIDE" || role === "complementary") return title || label || "aside";
+        return "";
+      };
+      let insideAside = false;
       const iconLabel = (el) => {
         if (el.getAttribute("aria-hidden") === "true") return "";
         const own = norm(el.getAttribute("aria-label") || "");
@@ -428,6 +446,25 @@ LIBRARY = r"""
           }
           flush();
           return;
+        }
+        if (!insideAside && node !== root && /^(NAV|ASIDE|SECTION|DIV|UL)$/.test(tag)) {
+          const label = asideLabel(node);
+          if (label) {
+            flush();
+            lines.push("");
+            lines.push(`[${label}: not the main content]`);
+            insideAside = true;
+            try {
+              for (const child of node.childNodes) walk(child);
+              if (node.shadowRoot) for (const child of node.shadowRoot.childNodes) walk(child);
+            } finally {
+              insideAside = false;
+            }
+            flush();
+            lines.push(`[end of ${label}]`);
+            lines.push("");
+            return;
+          }
         }
         const h = /^H([1-6])$/.exec(tag);
         if (h) { flush(); const t = norm(node.innerText); if (t) { lines.push(""); lines.push("#".repeat(Number(h[1])) + " " + t); lines.push(""); } return; }
