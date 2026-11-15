@@ -870,6 +870,18 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertNotEqual(moved.returncode, 0)
         self.assertIn("Stale ref", moved.stderr)
 
+    def test_click_goes_to_the_visible_content_of_a_target_with_no_box(self):
+        session = "contents"
+        self.browse("open", self.url("contents.html"), "--show", session=session)
+        self.browse("click", "#wrap", session=session)
+        self.assertEqual(self.browse("get", "title", session=session).stdout.strip(), "closed")
+        said = self.browse("click", "#zero", session=session)
+        self.assertIn("has no box of its own", said.stdout + said.stderr)
+        self.assertEqual(self.browse("get", "title", session=session).stdout.strip(), "page 2")
+        gone = self.browse("click", "#gone", session=session, check=False)
+        self.assertNotEqual(gone.returncode, 0)
+        self.assertIn("no visible box", gone.stderr)
+
     def test_read_marks_blocks_that_are_not_the_main_content(self):
         out = self.browse("read", self.url("product.html"), session="product").stdout
         self.assertIn("[navigation: not the main content]", out)
