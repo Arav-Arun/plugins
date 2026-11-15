@@ -839,6 +839,40 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("is", "visible", "#never", session=session, check=False)
         self.assertNotIn("waited", missing.stdout + missing.stderr)
 
+    def test_a_dropped_connection_says_to_try_another_way_in(self):
+        import threading
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        stop = threading.Event()
+
+        def drop_every_connection():
+            listener.settimeout(0.2)
+            while not stop.is_set():
+                try:
+                    accepted, _ = listener.accept()
+                except OSError:
+                    continue
+                accepted.recv(4096)
+                accepted.close()
+
+        dropper = threading.Thread(target=drop_every_connection, daemon=True)
+        dropper.start()
+        try:
+            url = f"http://127.0.0.1:{listener.getsockname()[1]}/announcements"
+            first = self.browse("open", url, session="dropped", check=False)
+            second = self.browse("open", url, session="dropped", check=False)
+        finally:
+            stop.set()
+            dropper.join(2)
+            listener.close()
+        self.assertNotEqual(first.returncode, 0)
+        self.assertIn("ERR_EMPTY_RESPONSE", first.stderr)
+        self.assertIn("The site dropped the connection;", first.stderr)
+        self.assertIn("read --http <url>", first.stderr)
+        self.assertIn("(2 failures on 127.0.0.1 in this session)", second.stderr)
+
     def test_read_waits_for_a_page_that_hydrates_late(self):
         out = self.browse("read", self.url("late.html"), session="late-read").stdout
         self.assertIn("Result card 12", out)

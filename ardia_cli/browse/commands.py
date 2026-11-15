@@ -9,6 +9,7 @@ import secrets
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ardia_cli.browse import actions, changes, snapshot
 from ardia_cli.browse.errors import BrowseError, ConnectionLost, Gated, OutcomeUnknown, Usage
@@ -156,6 +157,27 @@ async def wait_for_load(page, loader: str | None, timeout: float, until: str = "
     await wait_until(ready, timeout, 0.05, f"the page to reach {until}")
 
 
+DROPPED_CONNECTION = re.compile(r"ERR_(EMPTY_RESPONSE|CONNECTION_(RESET|CLOSED|REFUSED|TIMED_OUT)|TIMED_OUT|HTTP2_PROTOCOL_ERROR|SSL_PROTOCOL_ERROR|QUIC_PROTOCOL_ERROR)")
+
+
+def failed_navigation(ctx: Ctx, url: str, error_text: str) -> BrowseError:
+    from ardia_cli import command_metrics
+
+    failures = ctx.state.extras.setdefault("failed_navigations", {})
+    host = urlsplit(url).hostname or url
+    failures[host] = failures.get(host, 0) + 1
+    message = f"Navigation to {url} failed: {error_text}"
+    if DROPPED_CONNECTION.search(error_text):
+        command_metrics.flag("navigation_dropped_hint", True)
+        again = f" ({failures[host]} failures on {host} in this session)" if failures[host] > 1 else ""
+        message += (f". The site dropped the connection{again}; sites often do this to automated or foreign traffic, and the same URL "
+                    "rarely loads on a retry. Try another way in: the site's other hosts or pages, `read --http <url>`, "
+                    "its public API or feed, an archived copy, or another source with the same data, and name the source you used")
+    elif "ERR_NAME_NOT_RESOLVED" in error_text:
+        message += f". {host} has no address: check the spelling, or search for the site's current address"
+    return BrowseError(message, code="navigation_failed")
+
+
 async def navigate(ctx: Ctx, page, url: str, until: str = "load"):
     from ardia_cli.browse import readpages
 
@@ -165,7 +187,7 @@ async def navigate(ctx: Ctx, page, url: str, until: str = "load"):
         except Gated:
             raise BrowseError(f"Ardia's policy only lets the ardia command open web pages (http, https, data, about:blank); {url} isn't one", code="policy_refused") from None
         if result.get("errorText"):
-            raise BrowseError(f"Navigation to {url} failed: {result['errorText']}", code="navigation_failed")
+            raise failed_navigation(ctx, url, result["errorText"])
         await page.recovered(ctx.timeout)
         return
     before = await readpages.before_navigating(page, url)
@@ -174,7 +196,7 @@ async def navigate(ctx: Ctx, page, url: str, until: str = "load"):
     except Gated:
         raise BrowseError(f"Ardia's policy only lets the ardia command open web pages (http, https, data, about:blank); {url} isn't one", code="policy_refused") from None
     if result.get("errorText"):
-        raise BrowseError(f"Navigation to {url} failed: {result['errorText']}", code="navigation_failed")
+        raise failed_navigation(ctx, url, result["errorText"])
     loader = result.get("loaderId")
     page.state.load_note = None
     if loader:
