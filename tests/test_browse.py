@@ -777,6 +777,15 @@ class RefsTest(unittest.TestCase):
         with self.assertRaises(ConnectionLost):
             asyncio.run(state.connect())
 
+    def test_an_empty_untitled_page_says_it_was_likely_turned_away(self):
+        from ardia_cli.browse import readpages
+
+        empty = readpages.render([{"url": "https://example.test/a", "status": 200, "title": "", "text": ""}], {})
+        self.assertIn("the site sent an empty page", empty)
+        titled = readpages.render([{"url": "https://example.test/b", "status": 200, "title": "Blank", "text": ""}], {})
+        self.assertIn("(no text)", titled)
+        self.assertNotIn("empty page", titled)
+
     def test_a_missing_name_lists_the_closest_names_first(self):
         from ardia_cli.browse.commands import closest_names
 
