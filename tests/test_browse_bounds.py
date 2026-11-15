@@ -38,6 +38,14 @@ class CommandsAreBounded(unittest.TestCase):
         self.assertEqual(limits.answer_deadline({"argv": [], "options": {}}),
                          limits.QUEUE_WAIT + limits.COMMAND_LIMIT + limits.LIMIT_MARGIN)
 
+    def test_a_queued_script_waits_its_turn_for_as_long_as_it_may_run(self):
+        self.assertEqual(limits.queue_wait("click", ["@e1"]), limits.QUEUE_WAIT)
+        self.assertEqual(limits.queue_wait("script", []), limits.SCRIPT_DEFAULT)
+        self.assertEqual(limits.queue_wait("script", ["--timeout", "10m"]), 600)
+        self.assertEqual(limits.queue_wait("script", ["--timeout", "10s"]), limits.QUEUE_WAIT)
+        self.assertEqual(limits.answer_deadline({"argv": ["script", "--timeout", "5m"], "options": {}}),
+                         300 + 300 + 2 * limits.LIMIT_MARGIN)
+
     def test_a_hung_command_is_stopped_and_frees_the_session(self):
         instance = make_daemon(self)
         started = asyncio.Event()
@@ -81,6 +89,31 @@ class CommandsAreBounded(unittest.TestCase):
         code, _, err = run(scenario())
         self.assertEqual(code, 1)
         self.assertIn("This session is still running `select`", err)
+
+
+    def test_a_queued_script_runs_after_the_busy_one_instead_of_giving_up(self):
+        instance = make_daemon(self)
+        started = asyncio.Event()
+
+        async def slow(ctx, name, argv):
+            if not started.is_set():
+                started.set()
+                await asyncio.sleep(0.5)
+            return commands.Result()
+
+        async def scenario():
+            with mock.patch.object(daemon, "dispatch", slow), mock.patch.object(daemon, "QUEUE_WAIT", 0.2):
+                running = asyncio.ensure_future(instance.execute({"argv": ["script", "--timeout", "5s"], "options": {}}))
+                await started.wait()
+                queued = await instance.execute({"argv": ["script", "--timeout", "5s"], "options": {}})
+                plain = asyncio.ensure_future(instance.execute({"argv": ["tab", "list"], "options": {}}))
+                await running
+                return queued, await plain
+
+        queued, plain = run(scenario())
+        self.assertEqual(queued[0], 0)
+        self.assertEqual(plain[0], 0)
+        self.assertFalse(instance.lock.locked())
 
 
 class Element(SimpleNamespace):
