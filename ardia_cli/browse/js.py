@@ -824,16 +824,22 @@ LIBRARY = r"""
       const drags = globalThis.ardiaBrowseDragStarts;
       drags.accepted += drags.dispatched.filter((event) => !event.defaultPrevented).length;
       drags.dispatched.length = 0;
-      const active = document.activeElement;
-      return Object.assign({ activeFrame: !!active && (active.tagName === "IFRAME" || active.tagName === "FRAME") }, globalThis.ardiaBrowseInput, {
+      let active = document.activeElement;
+      while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+      return Object.assign({ activeFrame: !!active && ["IFRAME", "FRAME", "EMBED", "OBJECT"].includes(active.tagName) }, globalThis.ardiaBrowseInput, {
         dragstart: drags.accepted,
         dragend: drags.dragend,
         drop: drags.drop,
       });
     },
     overFrame(x, y) {
-      const hit = document.elementFromPoint(x, y);
-      return !!hit && (hit.tagName === "IFRAME" || hit.tagName === "FRAME");
+      let hit = document.elementFromPoint(x, y);
+      while (hit && hit.shadowRoot) {
+        const inner = hit.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === hit) break;
+        hit = inner;
+      }
+      return !!hit && ["IFRAME", "FRAME", "EMBED", "OBJECT"].includes(hit.tagName);
     },
     pushState(url) {
       history.pushState({}, "", url);

@@ -978,7 +978,7 @@ async def cmd_mouse(ctx: Ctx, argv):
     if action == "move":
         need(args, 3, "mouse move <x> <y>")
         x, y = float(args[1]), float(args[2])
-        needs = {} if await page.call("(x, y) => ardiaBrowse.overFrame(x, y)", x, y, frame=page.main_frame, read=True) else {"mousemove": 1}
+        needs = {} if await actions.over_frame(page, x, y) else {"mousemove": 1}
         await actions.expect_input(page, page.main_frame, lambda: page.input.gesture("mouse move", lambda: mouse.move(x, y, humanize=humanize), keep_held=True),
                                    needs, "The mouse move")
         return Result({"moved": True})
@@ -986,7 +986,7 @@ async def cmd_mouse(ctx: Ctx, argv):
         button = actions.mouse_button(args[1] if len(args) > 1 else None)
         run = (lambda: mouse.down(button)) if action == "down" else (lambda: mouse.up(button))
         x, y = mouse._position
-        over = await page.call("(x, y) => ardiaBrowse.overFrame(x, y)", x, y, frame=page.main_frame, read=True)
+        over = await actions.over_frame(page, x, y)
         await actions.expect_input(page, page.main_frame, lambda: page.input.gesture(f"mouse {action}", run, keep_held=True),
                                    {} if over else {"mousedown" if action == "down" else "mouseup": 1}, f"The mouse {action}")
         return Result({action: True})
@@ -995,7 +995,7 @@ async def cmd_mouse(ctx: Ctx, argv):
         dy = float(args[1])
         dx = float(args[2]) if len(args) > 2 else 0
         x, y = mouse._position
-        over = await page.call("(x, y) => ardiaBrowse.overFrame(x, y)", x, y, frame=page.main_frame, read=True)
+        over = await actions.over_frame(page, x, y)
         wheel = {"type": "mouseWheel", "x": int(x), "y": int(y), "deltaX": dx, "deltaY": dy}
         await actions.expect_input(page, page.main_frame, lambda: page.input.gesture("mouse wheel", lambda: page.send("Input.dispatchMouseEvent", wheel, input_event=True), keep_held=True),
                                    {} if over else {"wheel": 1}, "The wheel")

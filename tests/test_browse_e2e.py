@@ -725,6 +725,15 @@ class BrowseEndToEnd(unittest.TestCase):
         time.sleep(0.5)
         self.assertEqual(json.loads(self.browse("get", "text", "#report", session=session).stdout), {"clicked": ["box"]})
 
+    def test_a_press_and_hold_inside_a_frame_in_a_closed_shadow_root_is_delivered(self):
+        session = "shadow-hold"
+        self.browse("open", self.url("shadowframe.html"), "--show", session=session)
+        time.sleep(0.5)
+        held = self.browse("batch", session=session, stdin="mouse move 190 100\nmouse down\nwait 600\nmouse up\n")
+        self.assertNotIn("received none of its", held.stdout + held.stderr)
+        time.sleep(0.3)
+        self.assertGreaterEqual(json.loads(self.browse("get", "text", "#report", session=session).stdout)["held"], 500)
+
     def test_screenshot_if_changed_skips_an_unchanged_view(self):
         session = "if-changed"
         self.browse("open", self.url("focus.html"), session=session)
