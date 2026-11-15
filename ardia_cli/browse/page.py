@@ -393,7 +393,7 @@ class Page:
             except CdpError as error:
                 if OTHER_WORLD in error.cdp_message and attempt == 0 and await self.rehome(args, context):
                     continue
-                if not any(marker in error.cdp_message for marker in STALE_CONTEXT):
+                if OTHER_WORLD not in error.cdp_message and not any(marker in error.cdp_message for marker in STALE_CONTEXT):
                     raise
                 self.worlds.pop(frame or self.main_frame, None)
                 if read and attempt == 0 and not any(isinstance(a, Element) for a in args):

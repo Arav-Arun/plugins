@@ -498,6 +498,33 @@ class ElementsFromAnotherWorld(unittest.TestCase):
         self.assertEqual(sent[1][1], {"backendNodeId": 42, "executionContextId": 7})
 
 
+class ElementsFromAGonePage(unittest.TestCase):
+    def test_an_element_whose_page_is_gone_says_the_page_changed(self):
+        from ardia_cli.browse.errors import CdpError
+        from ardia_cli.browse.page import Element
+
+        page = Page(SimpleNamespace(sessions={}, frame_for=lambda page: None), "T")
+        page.session_id = "S"
+        page.main_frame = "F"
+
+        async def world(frame):
+            return 7
+
+        async def send(method, params=None, session=None, timeout=30, mutation=False):
+            if method == "Runtime.callFunctionOn":
+                raise CdpError(method, "Argument should belong to the same JavaScript world as target object")
+            if method == "DOM.resolveNode":
+                raise CdpError(method, "No node with given id found")
+            return {}
+
+        page.world = world
+        page.send = send
+        with self.assertRaises(BrowseError) as raised:
+            run(page.call("(el) => true", Element("F", "old", 42, "@e1"), frame="F", read=True))
+        self.assertEqual(raised.exception.code, "document_changed")
+        self.assertNotIn("JavaScript world", raised.exception.message)
+
+
 class MutationsCarryUnknownOutcomes(unittest.TestCase):
     def test_navigate_timeout_is_unknown(self):
         page = Page(SimpleNamespace(sessions={}), "T")
