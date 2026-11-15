@@ -52,7 +52,7 @@ Find:        find role|text|label|placeholder|alt|title|testid|first|last|nth <v
 Mouse:       mouse move <x> <y> | down [btn] | up [btn] | wheel <dy> [dx]
 Settings:    set viewport <w> <h> [scale] | reset                 (this session's own hidden tab, off-screen)
              set device|geo|offline|headers|credentials|media    (gated)
-Network:     network requests [--filter --type --method --status --clear] | request <id>
+Network:     network requests [--reload --filter --type --method --status --clear] | request <id>
              network har start [--content text|all|none] | har stop [path]
              network route <url> [--abort|--body <json>] | unroute [url]  (gated)
 Storage:     storage local|session [get [key] | set <k> <v> | clear]
@@ -235,7 +235,8 @@ COMMANDS = {
     "console": "ardia browse console [--clear]\n\nThe first call turns on the Runtime domain for the session's tab (Chrome then replays earlier\n"
                "messages); until then ardia browse leaves Runtime off, unlike agent-browser.",
     "errors": "ardia browse errors [--clear]\n\nUncaught exceptions; turns Runtime on like console.",
-    "network": "ardia browse network requests [--filter p] [--type t] [--method m] [--status 2xx] [--clear] | request <id>\n"
+    "network": "ardia browse network requests [--reload] [--filter p] [--type t] [--method m] [--status 2xx] [--clear] | request <id>\n"
+               "  --reload starts recording and reloads the page, so its own loads are listed (--type xhr,fetch: its data calls)\n"
                "  | har start [--content text|all|none] | har stop [path] | route <url> [--abort|--body json] | unroute [url]\n\n"
                "route needs Fetch.enable, which Ardia's policy doesn't allow yet. On the real connection Ardia strips\n"
                "Cookie, Set-Cookie and Authorization headers from what the command sees.",

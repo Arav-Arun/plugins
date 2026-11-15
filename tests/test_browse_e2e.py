@@ -935,6 +935,14 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertEqual(read.returncode, 0, read.stderr)
         self.assertIn("Result card 12", read.stdout)
 
+    def test_network_requests_reload_lists_what_the_page_loaded(self):
+        session = "network-reload"
+        self.browse("open", self.url("loadsdata.html"), session=session)
+        first = self.browse("network", "requests", "--type", "fetch", session=session).stdout
+        self.assertIn("network requests --reload", first)
+        listed = self.browse("network", "requests", "--reload", "--type", "fetch", session=session).stdout
+        self.assertIn("loadsdata.json", listed)
+
     def test_batch_out_saves_everything_the_batch_printed(self):
         session = "batch-out"
         self.browse("open", self.url("many.html"), session=session)
