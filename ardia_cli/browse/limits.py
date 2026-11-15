@@ -30,7 +30,9 @@ def command_limit(name: str, argv: list[str], timeout: float) -> float:
     return max(LONG_COMMANDS.get(name, COMMAND_LIMIT), (given or 0) + LIMIT_MARGIN)
 
 
-def queue_wait(name: str, argv: list[str], base: float = QUEUE_WAIT) -> float:
+def queue_wait(name: str, argv: list[str], base: float = QUEUE_WAIT, patient: bool = False) -> float:
+    if patient:
+        return max(base, command_limit(name, argv, DEFAULT_TIMEOUT_MS / 1000) - LIMIT_MARGIN)
     if name != "script":
         return base
     given = seconds_of(argv[argv.index("--timeout") + 1]) if "--timeout" in argv and argv.index("--timeout") + 1 < len(argv) else None
@@ -42,4 +44,4 @@ def answer_deadline(payload: dict) -> float:
     options = payload.get("options") or {}
     timeout = float(options.get("timeout_ms") or DEFAULT_TIMEOUT_MS) / 1000
     name, rest = str(argv[0]), [str(arg) for arg in argv[1:]]
-    return queue_wait(name, rest) + command_limit(name, rest, timeout) + LIMIT_MARGIN
+    return queue_wait(name, rest, patient=bool(payload.get("patient_queue"))) + command_limit(name, rest, timeout) + LIMIT_MARGIN

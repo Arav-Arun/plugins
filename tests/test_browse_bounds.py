@@ -46,6 +46,13 @@ class CommandsAreBounded(unittest.TestCase):
         self.assertEqual(limits.answer_deadline({"argv": ["script", "--timeout", "5m"], "options": {}}),
                          300 + 300 + 2 * limits.LIMIT_MARGIN)
 
+    def test_a_read_sent_beside_a_busy_session_waits_there_for_its_own_limit(self):
+        self.assertEqual(limits.queue_wait("read", ["a", "b"], patient=True), 600 - limits.LIMIT_MARGIN)
+        self.assertEqual(limits.queue_wait("read", ["a", "--timeout", "15m"], patient=True), 900)
+        self.assertEqual(limits.queue_wait("read", ["a"]), limits.QUEUE_WAIT)
+        self.assertEqual(limits.answer_deadline({"argv": ["read", "a"], "options": {}, "patient_queue": True}),
+                         570 + 600 + limits.LIMIT_MARGIN)
+
     def test_a_hung_command_is_stopped_and_frees_the_session(self):
         instance = make_daemon(self)
         started = asyncio.Event()

@@ -782,6 +782,9 @@ class RefsTest(unittest.TestCase):
 
         self.assertEqual(parse_ref("@e12"), "e12")
         self.assertEqual(parse_ref("ref=e3"), "e3")
+        self.assertEqual(parse_ref("[ref=e80]"), "e80")
+        self.assertIsNone(parse_ref("[ref=e80"))
+        self.assertIsNone(parse_ref("[data-ref=e80]"))
         self.assertIsNone(parse_ref("#e3"))
         self.assertIsNone(parse_ref("@ex"))
 

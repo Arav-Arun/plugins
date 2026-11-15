@@ -371,6 +371,7 @@ def read_beside(request: dict, config: dict, namespace: str, endpoint_key: str, 
         os.close(dir_fd)
     request = {**request, "options": {**request["options"], "_session": beside}}
     request.pop("beside_if_busy", None)
+    request["patient_queue"] = True
     answer = client.request(sock, request)
     answer.setdefault("metrics", {})["read_beside_busy"] = True
     return answer

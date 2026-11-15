@@ -913,6 +913,28 @@ class BrowseEndToEnd(unittest.TestCase):
         long.stdout.close()
         long.stderr.close()
 
+    def test_a_read_waits_its_turn_when_the_sibling_session_is_busy_too(self):
+        session = "busy-both"
+        self.browse("open", self.url("picker.html"), session=session)
+        self.browse("open", self.url("picker.html"), session=f"{session}-side")
+        env = dict(os.environ, PYTHONPATH=str(CLI))
+        base = [sys.executable, "-m", "ardia_cli", "browse", "--port", str(self.port), "--data-dir", str(self.data)]
+        sleepers = []
+        for name in (session, f"{session}-side"):
+            sleeper = subprocess.Popen(base + ["--session", name, "script", "--timeout", "2m"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, env=env)
+            sleeper.stdin.write("await sleep(40000); return 'slept';")
+            sleeper.stdin.close()
+            sleepers.append(sleeper)
+        time.sleep(3)
+        read = subprocess.run(base + ["--session", session, "read", self.url("late.html")], capture_output=True, text=True, env=env, timeout=240)
+        for sleeper in sleepers:
+            self.assertEqual(sleeper.wait(120), 0)
+            sleeper.stdout.close()
+            sleeper.stderr.close()
+        self.assertEqual(read.returncode, 0, read.stderr)
+        self.assertIn("Result card 12", read.stdout)
+
     def test_out_saves_the_whole_result_and_prints_a_summary(self):
         session = "out"
         self.browse("open", self.url("many.html"), session=session)

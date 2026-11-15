@@ -429,9 +429,9 @@ class Daemon:
         if request.get("beside_if_busy") and self.lock.locked():
             request["busy_elsewhere"] = True
             return render(options, error=self.busy_error(waited=False), name=name)
-        patience = queue_wait(name, [str(arg) for arg in argv[1:]], QUEUE_WAIT)
+        patience = queue_wait(name, [str(arg) for arg in argv[1:]], QUEUE_WAIT, bool(request.get("patient_queue")))
         if patience > QUEUE_WAIT and self.lock.locked():
-            command_metrics.flag("script_queued_behind_busy", True)
+            command_metrics.flag("read_queued_beside" if request.get("patient_queue") else "script_queued_behind_busy", True)
         try:
             await asyncio.wait_for(self.lock.acquire(), patience)
         except asyncio.TimeoutError:
