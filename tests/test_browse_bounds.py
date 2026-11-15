@@ -53,6 +53,12 @@ class CommandsAreBounded(unittest.TestCase):
         self.assertEqual(limits.answer_deadline({"argv": ["read", "a"], "options": {}, "patient_queue": True}),
                          570 + 600 + limits.LIMIT_MARGIN)
 
+    def test_an_inline_timeout_counts_like_a_separate_one(self):
+        self.assertEqual(limits.command_limit("eval", ["1", "--timeout=5m"], 25), 300 + limits.LIMIT_MARGIN)
+        self.assertEqual(limits.command_limit("script", ["--timeout=5m"], 25), 300 + limits.LIMIT_MARGIN)
+        self.assertEqual(limits.queue_wait("script", ["--timeout=5m"]), 300)
+        self.assertEqual(limits.command_limit("eval", ["--", "--timeout=5m"], 25), limits.COMMAND_LIMIT)
+
     def test_a_hung_command_is_stopped_and_frees_the_session(self):
         instance = make_daemon(self)
         started = asyncio.Event()
@@ -121,6 +127,70 @@ class CommandsAreBounded(unittest.TestCase):
         self.assertEqual(queued[0], 0)
         self.assertEqual(plain[0], 0)
         self.assertFalse(instance.lock.locked())
+
+
+    def test_a_command_queued_behind_a_busy_session_yields_to_a_pending_close(self):
+        instance = make_daemon(self)
+        started = asyncio.Event()
+        ran = []
+
+        async def slow(ctx, name, argv):
+            ran.append(name)
+            if not started.is_set():
+                started.set()
+                await asyncio.sleep(0.3)
+            return commands.Result()
+
+        async def scenario():
+            with mock.patch.object(daemon, "dispatch", slow):
+                running = asyncio.ensure_future(instance.execute({"argv": ["script", "--timeout", "5s"], "options": {}}))
+                await started.wait()
+                queued = asyncio.ensure_future(instance.execute({"argv": ["script", "--timeout", "5s"], "options": {}}))
+                await asyncio.sleep(0.05)
+                closing = asyncio.ensure_future(instance.execute({"argv": ["close"], "options": {}}))
+                await asyncio.gather(running, closing)
+                return await queued
+
+        code, _, err = run(scenario())
+        self.assertEqual(ran, ["script"])
+        self.assertEqual(code, 1)
+        self.assertIn("is closing", err)
+
+    def test_patient_queue_only_lets_a_read_wait_longer(self):
+        instance = make_daemon(self)
+        started = asyncio.Event()
+
+        async def slow(ctx, name, argv):
+            if not started.is_set():
+                started.set()
+                await asyncio.sleep(0.6)
+            return commands.Result()
+
+        async def scenario():
+            with mock.patch.object(daemon, "dispatch", slow), mock.patch.object(daemon, "QUEUE_WAIT", 0.2):
+                running = asyncio.ensure_future(instance.execute({"argv": ["select", "#g", "a"], "options": {}}))
+                await started.wait()
+                waited = await instance.execute({"argv": ["click", "#a"], "options": {}, "patient_queue": True})
+                await running
+                return waited
+
+        code, _, err = run(scenario())
+        self.assertEqual(code, 1)
+        self.assertIn("still running `select`", err)
+
+    def test_an_eval_that_runs_long_keeps_its_outcome_unknown(self):
+        state = SimpleNamespace(page=mock.AsyncMock(return_value=SimpleNamespace(frames={}, main_frame=None)))
+        ctx = commands.Ctx(state, {}, "/", {}, None, "eval")
+        timed_out = OutcomeUnknown("`Runtime.evaluate`", "Ardia didn't answer Runtime.evaluate in 60s after it was sent")
+        with mock.patch.object(commands, "evaluate_main", mock.AsyncMock(side_effect=timed_out)):
+            with self.assertRaises(OutcomeUnknown) as raised:
+                run(commands.cmd_eval(ctx, ["1", "--timeout", "2s"]))
+        self.assertIn("didn't finish within 2 s", raised.exception.message)
+        other = OutcomeUnknown("`eval`", "the tab detached")
+        with mock.patch.object(commands, "evaluate_main", mock.AsyncMock(side_effect=other)):
+            with self.assertRaises(OutcomeUnknown) as raised:
+                run(commands.cmd_eval(ctx, ["1"]))
+        self.assertIs(raised.exception, other)
 
 
 class Element(SimpleNamespace):

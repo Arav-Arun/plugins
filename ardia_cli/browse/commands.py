@@ -157,17 +157,20 @@ async def wait_for_load(page, loader: str | None, timeout: float, until: str = "
     await wait_until(ready, timeout, 0.05, f"the page to reach {until}")
 
 
+FAILED_HOSTS_KEPT = 50
 DROPPED_CONNECTION = re.compile(r"ERR_(EMPTY_RESPONSE|CONNECTION_(RESET|CLOSED|REFUSED|TIMED_OUT)|TIMED_OUT|HTTP2_PROTOCOL_ERROR|SSL_PROTOCOL_ERROR|QUIC_PROTOCOL_ERROR)")
 
 
 def failed_navigation(ctx: Ctx, url: str, error_text: str) -> BrowseError:
     from ardia_cli import command_metrics
 
-    failures = ctx.state.extras.setdefault("failed_navigations", {})
     host = urlsplit(url).hostname or url
-    failures[host] = failures.get(host, 0) + 1
     message = f"Navigation to {url} failed: {error_text}"
     if DROPPED_CONNECTION.search(error_text):
+        failures = ctx.state.extras.setdefault("failed_navigations", {})
+        failures[host] = failures.pop(host, 0) + 1
+        while len(failures) > FAILED_HOSTS_KEPT:
+            failures.pop(next(iter(failures)))
         command_metrics.flag("navigation_dropped_hint", True)
         again = f" ({failures[host]} failures on {host} in this session)" if failures[host] > 1 else ""
         message += (f". The site dropped the connection{again}; sites often do this to automated or foreign traffic, and the same URL "
@@ -1080,13 +1083,15 @@ async def cmd_eval(ctx: Ctx, argv):
         hint_once(ctx.state, "fetch", FETCH_HINT)
     try:
         value = await evaluate_main(page, script, limit)
-    except OutcomeUnknown:
+    except OutcomeUnknown as error:
+        if "didn't answer Runtime.evaluate" not in error.message:
+            raise
         from ardia_cli import command_metrics
 
         command_metrics.flag("eval_timed_out", True)
-        raise BrowseError(f"The page's code didn't finish within {limit:g} s (eval waits for the promise it returns), so eval stopped waiting; "
-                          f"it may still be running in the page. Give it longer with `eval --timeout 5m` (up to {MAX_TIMEOUT / 60:g}m), "
-                          "or split the work into smaller batches", code="timeout") from None
+        raise OutcomeUnknown("`eval`", f"The page's code didn't finish within {limit:g} s (eval waits for the promise it returns) and may still "
+                             f"be running in the page. Give it longer with `eval --timeout 5m` (up to {MAX_TIMEOUT / 60:g}m), "
+                             "or split the work into smaller batches") from None
     origin = page.frames.get(page.main_frame, {}).get("origin") or ""
     return Result({"origin": origin + "/" if origin and not origin.endswith("/") else origin, "result": value}, render_json(value), page_content=True)
 

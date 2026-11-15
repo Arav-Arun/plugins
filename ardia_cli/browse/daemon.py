@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -230,6 +231,7 @@ class Daemon:
         self.last = time.monotonic()
         self.stop = asyncio.Event()
         self.stopping = False
+        self.closing = 0
         self.active: set = set()
         self.sock_id = None
         self.idle_limit = float(config.get("idle_timeout_ms") or DEFAULT_DAEMON_IDLE * 1000) / 1000
@@ -429,7 +431,7 @@ class Daemon:
         if request.get("beside_if_busy") and self.lock.locked():
             request["busy_elsewhere"] = True
             return render(options, error=self.busy_error(waited=False), name=name)
-        patience = queue_wait(name, [str(arg) for arg in argv[1:]], QUEUE_WAIT, bool(request.get("patient_queue")))
+        patience = queue_wait(name, [str(arg) for arg in argv[1:]], QUEUE_WAIT, name == "read" and bool(request.get("patient_queue")))
         if patience > QUEUE_WAIT and self.lock.locked():
             command_metrics.flag("read_queued_beside" if request.get("patient_queue") else "script_queued_behind_busy", True)
         try:
@@ -437,7 +439,7 @@ class Daemon:
         except asyncio.TimeoutError:
             return render(options, error=self.busy_error(waited=patience), name=name)
         try:
-            if self.stopping:
+            if self.stopping or self.closing:
                 return self.refuse_closing(options, name)
             if self.state.lost:
                 return render(options, error=ConnectionLost(), name=name)
@@ -501,12 +503,24 @@ class Daemon:
             return render(options, error=BrowseError(f"{name} failed: {type(error).__name__}: {error}"), name=name)
         return render(options, result=result, name=name)
 
+    @contextlib.asynccontextmanager
+    async def lock_for_close(self):
+        self.closing += 1
+        try:
+            await self.lock.acquire()
+        finally:
+            self.closing -= 1
+        try:
+            yield
+        finally:
+            self.lock.release()
+
     async def close(self, ctx):
         from ardia_cli.browse.commands import Result
 
         closed = 0
         kept = []
-        async with self.lock:
+        async with self.lock_for_close():
             if self.stopping:
                 return self.refuse_closing(ctx.options, "close")
             self.stopping = True

@@ -18,10 +18,20 @@ def seconds_of(text: str | None) -> float | None:
     return number * {"ms": 0.001, "s": 1, "m": 60}[unit]
 
 
-def command_limit(name: str, argv: list[str], timeout: float) -> float:
+def given_timeout(argv: list[str]) -> float | None:
     given = None
-    if "--timeout" in argv and argv.index("--timeout") + 1 < len(argv):
-        given = seconds_of(argv[argv.index("--timeout") + 1])
+    for index, token in enumerate(argv):
+        if token == "--":
+            break
+        if token == "--timeout" and index + 1 < len(argv):
+            given = seconds_of(argv[index + 1])
+        elif token.startswith("--timeout="):
+            given = seconds_of(token.split("=", 1)[1])
+    return given
+
+
+def command_limit(name: str, argv: list[str], timeout: float) -> float:
+    given = given_timeout(argv)
     if name == "wait":
         plain = next((seconds_of(arg) for arg in argv if re.fullmatch(r"\d+(\.\d+)?", arg)), None)
         return max(COMMAND_LIMIT, (given or plain or timeout) + LIMIT_MARGIN)
@@ -35,8 +45,7 @@ def queue_wait(name: str, argv: list[str], base: float = QUEUE_WAIT, patient: bo
         return max(base, command_limit(name, argv, DEFAULT_TIMEOUT_MS / 1000) - LIMIT_MARGIN)
     if name != "script":
         return base
-    given = seconds_of(argv[argv.index("--timeout") + 1]) if "--timeout" in argv and argv.index("--timeout") + 1 < len(argv) else None
-    return max(base, given or SCRIPT_DEFAULT)
+    return max(base, given_timeout(argv) or SCRIPT_DEFAULT)
 
 
 def answer_deadline(payload: dict) -> float:
