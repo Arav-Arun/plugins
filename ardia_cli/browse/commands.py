@@ -1075,7 +1075,7 @@ async def cmd_eval(ctx: Ctx, argv):
 
     options, args = parse(argv, {"--base64": "bool", "--stdin": "bool", "--timeout": "value"}, {"-b": "--base64"})
     limit = parse_timeout(options["timeout"]) if options.get("timeout") else EVAL_TIMEOUT
-    if options.get("stdin"):
+    if options.get("stdin") or (not args and ctx.stdin):
         script = ctx.stdin or ""
     else:
         need(args, 1, "eval <js> | -b <base64> | --stdin [--timeout 2m]")

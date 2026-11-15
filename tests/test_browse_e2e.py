@@ -846,6 +846,14 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("is", "visible", "#never", session=session, check=False)
         self.assertNotIn("waited", missing.stdout + missing.stderr)
 
+    def test_eval_reads_its_code_from_stdin_when_none_is_given(self):
+        session = "eval-stdin"
+        self.browse("open", self.url("many.html"), session=session)
+        target = self.data / "out" / "eval-stdin.json"
+        said = self.browse("eval", "--out", str(target), session=session, stdin="JSON.stringify({ title: document.title })").stdout
+        self.assertIn(f"Saved to {target}", said)
+        self.assertEqual(json.loads(target.read_text())["title"], self.browse("get", "title", session=session).stdout.strip())
+
     def test_eval_waits_for_slow_page_code_as_long_as_its_timeout_allows(self):
         session = "slow-eval"
         self.browse("open", self.url("many.html"), session=session)

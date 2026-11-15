@@ -321,6 +321,21 @@ def notes_need_page(args: list[str]) -> bool:
         return False
 
 
+EVAL_VALUE_FLAGS = {"--out", "--timeout", "--max-output"}
+
+def eval_code_given(args: list[str]) -> bool:
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in EVAL_VALUE_FLAGS:
+            index += 2
+            continue
+        if not token.startswith("-") or token == "-":
+            return True
+        index += 1
+    return False
+
+
 def read_stdin_text() -> str:
     from ardia_cli import notes
 
@@ -493,7 +508,8 @@ def run(argv: list[str]) -> int:
         stdin = None
         if command == "notes" and "-" in args:
             stdin = read_stdin_text()
-        elif (command in ("eval", "addinitscript") and "--stdin" in args) or (command == "batch" and not [a for a in args if not a.startswith("--")] and not sys.stdin.isatty()):
+        elif (command in ("eval", "addinitscript") and "--stdin" in args) or (command == "eval" and not eval_code_given(args) and not sys.stdin.isatty()) \
+                or (command == "batch" and not [a for a in args if not a.startswith("--")] and not sys.stdin.isatty()):
             stdin = sys.stdin.read()
         elif command == "read":
             stdin = read_stdin_urls(args)
