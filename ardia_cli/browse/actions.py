@@ -1427,6 +1427,13 @@ async def scroll(page, direction: str, amount: float, humanize: bool, selector_e
         ox, oy = await frame_offset(page, selector_element.frame)
         point = (ox + r["x"] + r["width"] * random.uniform(0.35, 0.65), oy + r["y"] + r["height"] * random.uniform(0.35, 0.65))
         frame = selector_element.frame
-    needs = {} if distance == 0 or not await page.takes_input() else {"wheel": 1}
+    else:
+        vp = await viewport(page)
+        x, y = page.input.mouse._position
+        if not (8 <= x <= vp["width"] - 8 and 8 <= y <= vp["height"] - 8):
+            x, y = vp["width"] * random.uniform(0.35, 0.65), vp["height"] * random.uniform(0.35, 0.65)
+        point = (x, y)
+    landed_inside = frame is None and distance != 0 and await over_frame(page, *point)
+    needs = {} if distance == 0 or landed_inside or not await page.takes_input() else {"wheel": 1}
     await expect_input(page, frame, lambda: page.input.gesture("scroll", lambda: scroll_wheel(page, distance, vertical, humanize, point, frame, selector_element), allow_hidden=True),
                        needs, "The scroll")

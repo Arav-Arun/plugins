@@ -886,6 +886,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertNotEqual(moved.returncode, 0)
         self.assertIn("Stale ref", moved.stderr)
 
+    def test_a_scroll_that_lands_in_a_frame_counts_as_delivered(self):
+        session = "scrollframe"
+        self.browse("open", self.url("scrollframe.html"), "--show", session=session)
+        done = self.browse("scroll", "down", "600", session=session, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("received none of its wheel events", done.stderr)
+
     def test_click_goes_to_the_visible_content_of_a_target_with_no_box(self):
         session = "contents"
         self.browse("open", self.url("contents.html"), "--show", session=session)
