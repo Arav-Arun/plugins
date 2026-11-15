@@ -403,6 +403,7 @@ class BrowseEndToEnd(unittest.TestCase):
 
     def test_a_background_tab_tells_its_first_script_the_window_it_belongs_to(self):
         self.browse("open", self.url("geometry.html"), "--show", session="geometry-shown")
+        shown = json.loads(json.loads(self.browse("eval", "JSON.stringify([outerWidth, outerHeight, screenX, screenY])", session="geometry-shown").stdout))
         for attempt in range(3):
             session = f"geometry-{attempt}"
             self.browse("open", self.url("geometry.html"), session=session)
@@ -412,8 +413,7 @@ class BrowseEndToEnd(unittest.TestCase):
             self.assertGreater(inner_height, 0, seen)
             self.assertGreaterEqual(outer_width, inner_width, seen)
             self.assertGreater(outer_height, inner_height, seen)
-            self.assertLess(left, screen_width, seen)
-            self.assertLess(top, screen_height, seen)
+            self.assertEqual([outer_width, outer_height, left, top], shown, seen)
             self.browse("close", session=session)
         self.browse("close", session="geometry-shown")
 
