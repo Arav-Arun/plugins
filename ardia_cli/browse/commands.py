@@ -702,6 +702,7 @@ async def cmd_fill(ctx: Ctx, argv):
         finally:
             await actions.unwatch_suggestions(page, element)
 
+    text_before = await page_text_mark(page, element)
     ((retargeted, stored), found), report = await changes.observe(ctx, page, run, None if typeahead else (element, None))
     result = filled_result("filled", args[0], retargeted, text, stored)
     if found:
@@ -709,7 +710,49 @@ async def cmd_fill(ctx: Ctx, argv):
         best = text if actions.unique_match(text, found) else found[0]["text"]
         result.text += (f"\n→ {len(found)} suggestion{'s' if len(found) != 1 else ''} showing, none picked. "
                         f"To pick one: ardia browse select {args[0]} {shlex.quote(best)}")
-    return changes.attach(result, report)
+    result = changes.attach(result, report)
+    if (text and not typeahead and not found and stored is None and text_before is not None and only_the_field_changed(report)
+            and await is_input(page, element) and await page_text_mark(page, element) == text_before):
+        from ardia_cli import command_metrics
+
+        command_metrics.flag("fill_no_reaction_hint", True)
+        result.text += NO_REACTION_HINT
+    return result
+
+
+NO_REACTION_HINT = ("\n→ Nothing else on the page changed yet. Some fields only apply when you press Enter or leave them: "
+                    "`press Enter` or `press Tab`, then check again")
+
+
+def only_the_field_changed(report: dict | None) -> bool:
+    if not report or report.get("document") != "same" or report.get("unsettled"):
+        return False
+    quiet = not (report.get("added") or report.get("removed") or report.get("network") or report.get("text")
+                 or report.get("url") or report.get("title"))
+    return quiet and len(report.get("changed") or []) <= 1
+
+
+PAGE_TEXT_MARK = """() => {
+  const text = document.body ? document.body.innerText : "";
+  let hash = 0;
+  for (let index = 0; index < text.length; index++) hash = (hash * 31 + text.charCodeAt(index)) | 0;
+  return [text.length, hash];
+}"""
+
+
+async def page_text_mark(page, element):
+    try:
+        return await page.call(PAGE_TEXT_MARK, frame=element.frame, read=True)
+    except BrowseError:
+        return None
+
+
+async def is_input(page, element) -> bool:
+    try:
+        info = await page.call("(el) => ardiaBrowse.info(el)", element, frame=element.frame, read=True)
+    except BrowseError:
+        return False
+    return info.get("tag") == "input" and (info.get("type") or "text") in ("text", "number", "search", "tel")
 
 
 def filled_result(key: str, selector: str, retargeted: bool, text: str, stored: str | dict | None) -> Result:

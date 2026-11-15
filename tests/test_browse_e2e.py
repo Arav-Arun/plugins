@@ -846,6 +846,16 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("is", "visible", "#never", session=session, check=False)
         self.assertNotIn("waited", missing.stdout + missing.stderr)
 
+    def test_fill_says_when_the_page_has_not_reacted_yet(self):
+        session = "qty"
+        self.browse("open", self.url("qty.html"), "--show", session=session)
+        quiet = self.browse("fill", "#qty", "5", session=session).stdout
+        self.assertIn("Nothing else on the page changed yet", quiet)
+        self.browse("press", "Tab", session=session)
+        self.assertEqual(self.browse("get", "text", "#total", session=session).stdout.strip(), "$10.00")
+        live = self.browse("fill", "#live", "3", session=session).stdout
+        self.assertNotIn("Nothing else on the page changed yet", live)
+
     def test_eval_reads_its_code_from_stdin_when_none_is_given(self):
         session = "eval-stdin"
         self.browse("open", self.url("many.html"), session=session)
