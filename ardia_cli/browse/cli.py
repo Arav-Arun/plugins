@@ -533,7 +533,8 @@ def run(argv: list[str]) -> int:
     except paths.PathError as error:
         return print_error(BrowseError(str(error)), as_json)
     except KeyboardInterrupt:
-        sys.stderr.write("✗ interrupted\n")
+        sys.stderr.write("✗ interrupted\n" if rest[0] != "script" else
+                         "✗ interrupted. Whatever the script had put in `state` is kept: `ardia browse script 'return state'` prints it\n")
         return 130
     telemetry.note_answer(answer)
     write(answer.get("out") or "", sys.stdout)

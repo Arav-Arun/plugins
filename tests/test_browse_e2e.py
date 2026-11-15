@@ -935,6 +935,24 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertEqual(read.returncode, 0, read.stderr)
         self.assertIn("Result card 12", read.stdout)
 
+    def test_an_interrupted_script_keeps_its_state(self):
+        import signal
+
+        session = "interrupted"
+        self.browse("open", self.url("picker.html"), session=session)
+        env = dict(os.environ, PYTHONPATH=str(CLI))
+        long = subprocess.Popen([sys.executable, "-m", "ardia_cli", "browse", "--port", str(self.port), "--data-dir", str(self.data), "--session", session,
+                                 "script", "--timeout", "2m"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        long.stdin.write("state.rows = [1, 2, 3]; await sleep(60000); return 'slept';")
+        long.stdin.close()
+        time.sleep(4)
+        long.send_signal(signal.SIGINT)
+        _, err = long.communicate(timeout=30)
+        self.assertEqual(long.returncode, 130)
+        self.assertIn("ardia browse script 'return state'", err)
+        kept = self.browse("script", session=session, stdin="return state.rows;").stdout
+        self.assertIn("[1,2,3]", kept.replace(" ", "").replace("\n", ""))
+
     def test_out_saves_the_whole_result_and_prints_a_summary(self):
         session = "out"
         self.browse("open", self.url("many.html"), session=session)
