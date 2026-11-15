@@ -846,6 +846,21 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("is", "visible", "#never", session=session, check=False)
         self.assertNotIn("waited", missing.stdout + missing.stderr)
 
+    def test_a_ref_follows_its_element_after_the_page_reloads_the_same_address(self):
+        session = "reloadme"
+        self.browse("open", self.url("reloadme.html"), "--show", session=session)
+        ref = re.search(r'button "Apply" \[ref=(e\d+)\]', self.browse("snapshot", "-i", session=session).stdout).group(1)
+        self.browse("eval", "setTimeout(() => location.reload(), 50); true", session=session)
+        time.sleep(1.5)
+        clicked = self.browse("click", "@" + ref, session=session)
+        self.assertIn("was from before the page reloaded the same address", clicked.stdout + clicked.stderr)
+        self.assertEqual(self.browse("get", "title", session=session).stdout.strip(), "applied")
+        again = re.search(r'button "Apply" \[ref=(e\d+)\]', self.browse("snapshot", "-i", session=session).stdout).group(1)
+        self.browse("open", self.url("qty.html"), session=session)
+        moved = self.browse("click", "@" + again, session=session, check=False)
+        self.assertNotEqual(moved.returncode, 0)
+        self.assertIn("Stale ref", moved.stderr)
+
     def test_read_keeps_the_labels_of_icons_beside_values(self):
         out = self.browse("read", self.url("iconlabels.html"), session="iconlabels").stdout
         self.assertIn("[Customer care] 1-800-111-2222", out)
