@@ -174,8 +174,8 @@ def failed_navigation(ctx: Ctx, url: str, error_text: str) -> BrowseError:
         command_metrics.flag("navigation_dropped_hint", True)
         again = f" ({failures[host]} failures on {host} in this session)" if failures[host] > 1 else ""
         message += (f". The site dropped the connection{again}; sites often do this to automated or foreign traffic, and the same URL "
-                    "rarely loads on a retry. Try another way in: the site's other hosts or pages, `read --http <url>`, "
-                    "its public API or feed, an archived copy, or another source with the same data, and name the source you used")
+                    "rarely loads on a retry. Its other pages, `read --http <url>` or its public API may still answer; "
+                    "if nothing does, say what couldn't be reached")
     elif "ERR_NAME_NOT_RESOLVED" in error_text:
         message += f". {host} has no address: check the spelling, or search for the site's current address"
     return BrowseError(message, code="navigation_failed")
