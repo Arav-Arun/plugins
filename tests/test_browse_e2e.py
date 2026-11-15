@@ -679,6 +679,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertEqual(report["prompt"], "reject")
         self.assertIn("late-buy", report["clicked"])
 
+    def test_click_dismisses_a_consent_banner_that_appears_after_another_layer_moved_away(self):
+        session = "consent-late"
+        self.browse("open", self.url("consentlate.html"), "--show", session=session)
+        said = self.browse("click", "#search", session=session).stdout
+        self.assertIn('"Just Necessary" button was clicked (reject)', said)
+        self.assertEqual(self.report(session), {"clicked": ["search"], "choice": "necessary"})
+
     def test_press_on_a_wrapper_focuses_the_field_inside_and_a_hidden_one_is_explained(self):
         session = "focus"
         self.browse("open", self.url("focus.html"), "--show", session=session)
