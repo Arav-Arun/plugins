@@ -72,6 +72,18 @@ LIBRARY = r"""
       const found = api.queryAll(selector, root);
       return found.find((el) => api.visible(el)) || found[0] || null;
     },
+    validCss(css) {
+      try {
+        document.createDocumentFragment().querySelector(css);
+        return true;
+      } catch (error) {
+        return false;
+      }
+    },
+    quoteAttributeValues(css) {
+      return css.replace(/\[\s*([^\s~|^$*!=\]"']+)\s*([~|^$*]?=)\s*([^"'\]\s][^\]]*?)(\s+[iIsS])?\s*\]/g,
+        (whole, name, op, value, flag) => `[${name}${op}"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"${flag || ""}]`);
+    },
     queryAll(selector, root) {
       root = root || document;
       const chain = api.chainParts(selector);
@@ -111,6 +123,7 @@ LIBRARY = r"""
       let css = selector.replace(/^css=/, "").replace(/\[role=(["']?)([A-Za-z]+)\1\]/g, (whole, q, name) => api.roleCss(name.toLowerCase()) === `[role="${name.toLowerCase()}"]` ? whole : `:is(${api.roleCss(name.toLowerCase())})`);
       css = api.outsideStrings(css, (piece) => piece.replace(/:text\(/g, ":has-text("));
       if (/^[a-z]+$/.test(css) && ROLE_WORDS.has(css) && !root.querySelector(css)) css = api.roleCss(css);
+      if (!api.validCss(css)) css = api.quoteAttributeValues(css);
       const parts = api.textPseudos(css);
       if (parts.length === 1) return Array.from(root.querySelectorAll(css));
       let found = null;

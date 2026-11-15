@@ -1049,6 +1049,7 @@ def glob_match(pattern: str, url: str) -> bool:
 
 
 EVAL_TIMEOUT = 60.0
+UNQUOTED_ATTRIBUTE = re.compile(r"\[[^\]\"'=]+=[^\]\"']*[\s/:.,;][^\]\"']*\]")
 
 
 async def evaluate_main(page, expression: str, timeout: float = EVAL_TIMEOUT):
@@ -1056,6 +1057,9 @@ async def evaluate_main(page, expression: str, timeout: float = EVAL_TIMEOUT):
     if "exceptionDetails" in result:
         details = result["exceptionDetails"]
         description = (details.get("exception") or {}).get("description") or details.get("text") or "error"
+        if "is not a valid selector" in description and UNQUOTED_ATTRIBUTE.search(description):
+            description += ('\n  An attribute value with spaces or punctuation needs quotes in CSS: a[href*="/path/"], '
+                            '[aria-label="Two words"]. ardia browse\'s own selectors (click, find, get) quote it for you')
         raise BrowseError(f"Evaluation error: {description}", code="page_script_error")
     remote = result.get("result") or {}
     if remote.get("type") == "undefined":

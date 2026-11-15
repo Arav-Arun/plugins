@@ -935,6 +935,19 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertEqual(read.returncode, 0, read.stderr)
         self.assertIn("Result card 12", read.stdout)
 
+    def test_unquoted_attribute_values_work_in_selectors_and_eval_says_how_to_quote(self):
+        session = "unquoted"
+        self.browse("open", self.url("many.html"), "--show", session=session)
+        self.browse("eval", "const b = document.createElement('button'); b.setAttribute('aria-label', 'Number of bedrooms'); "
+                    "b.dataset.path = '/en/plp/'; b.textContent = 'Beds'; b.onclick = () => { document.title = 'beds picked'; }; "
+                    "document.body.prepend(b); true", session=session)
+        self.browse("click", "[aria-label=Number of bedrooms]", session=session)
+        self.assertEqual(self.browse("get", "title", session=session).stdout.strip(), "beds picked")
+        self.assertIn("Beds", self.browse("get", "text", "button[data-path*=/en/plp/]", session=session).stdout)
+        bad = self.browse("eval", "document.querySelector('a[href*=/en/plp/]')", session=session, check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn('needs quotes in CSS: a[href*="/path/"]', bad.stderr)
+
     def test_an_interrupted_script_keeps_its_state(self):
         import signal
 
