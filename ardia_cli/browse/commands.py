@@ -1779,6 +1779,13 @@ async def cmd_read(ctx: Ctx, argv):
     from ardia_cli.browse import readpages, readurl
 
     options, args = parse(argv, readpages.flags(), readpages.ALIASES)
+    if options.get("data"):
+        from ardia_cli.browse import pagedata
+
+        if args or options.get("links") is not None:
+            raise Usage("read --data reads this tab's embedded JSON; open the page first, then run `read --data`")
+        page = await ctx.state.page()
+        return await pagedata.run(ctx, page, ctx.state.frame_for(page) or page.main_frame, options)
     if readpages.scrolls(options):
         return await readpages.run_scroll(ctx, options, args)
     if readpages.single_fetch(options, args):

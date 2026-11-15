@@ -8,9 +8,9 @@ DURATIONS = frozenset({
     "total_ms", "startup_ms", "daemon_start_ms", "connect_ms", "attach_ms", "snapshot_build_ms", "action_ms", "eval_ms",
     "settle_ms", "cdp_ms_total",
 })
-COUNTS = frozenset({"cdp_calls", "snapshot_nodes", "snapshot_chars", "output_chars", "network_writes_count", "batch_steps",
+COUNTS = frozenset({"cdp_calls", "read_data_blocks", "snapshot_nodes", "snapshot_chars", "output_chars", "network_writes_count", "batch_steps",
                     "read_rows", "read_pages", "read_tabs_reopened", "skills_installed", "skills_skipped"})
-READ_FLAGS = frozenset({"read_scrolled", "read_matched", "read_virtualized_grid", "read_pdf", "read_waited_for_content", "read_beside_busy", "read_bot_check", "read_scroll_guessed", "read_scope_shown"})
+READ_FLAGS = frozenset({"read_data", "read_data_shaped", "read_scrolled", "read_matched", "read_virtualized_grid", "read_pdf", "read_waited_for_content", "read_beside_busy", "read_bot_check", "read_scroll_guessed", "read_scope_shown"})
 ACT_FLAGS = frozenset({"waited_for_enabled", "fill_picked_option", "fill_inserted_text", "drag_side_given", "drag_list_position",
                        "select_opened_list", "press_targeted", "consent_dismissed", "popup_dismissed", "click_recentered", "dom_click_fallback"})
 ACT_COUNTS = frozenset({"cell_edits"})
