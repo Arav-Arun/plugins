@@ -1178,6 +1178,7 @@ async def cmd_is(ctx: Ctx, argv):
 FIND_ACTIONS = ("click", "fill", "type", "press", "check", "uncheck", "select", "hover", "focus", "dblclick", "text")
 FIND_LOCATORS = ("role", "text", "label", "placeholder", "alt", "title", "testid", "first", "last", "nth")
 MAX_CANDIDATES = 8
+CLOSE_ENOUGH = 0.6
 BATCH_DEFAULT_CAP = 6000
 SHOWN_HOLD = 0.3
 FIND_WAIT = 1.5
@@ -1314,6 +1315,24 @@ def role_candidates(nodes: list, role: str, name: str | None, exact: bool) -> tu
     return [item for item in of_role if target in plain(item[1])], "partial"
 
 
+def closest_names(wanted: str, names: list[str]) -> list[str]:
+    target = plain(wanted)
+    words = set(re.findall(r"\w+", target))
+
+    def likeness(text: str) -> float:
+        own = plain(text)
+        shared = len(words & set(re.findall(r"\w+", own))) / max(len(words), 1)
+        return shared + difflib.SequenceMatcher(None, target, own).ratio()
+
+    ranked = sorted(range(len(names)), key=lambda index: (-likeness(names[index]), index))
+    if ranked and likeness(names[ranked[0]]) >= CLOSE_ENOUGH:
+        from ardia_cli import command_metrics
+
+        command_metrics.flag("find_closest_names", True)
+        return [names[index] for index in ranked[:MAX_CANDIDATES]]
+    return names[:MAX_CANDIDATES]
+
+
 async def find_role(ctx, page, frame, role, name, exact):
     tree = await page.send("Accessibility.getFullAXTree", {"frameId": frame}, timeout=60)
     nodes = tree.get("nodes") or []
@@ -1328,7 +1347,8 @@ async def find_role(ctx, page, frame, role, name, exact):
         element, node_name = resolved[0]
         return element, shown, node_name
     if not resolved:
-        close = list(dict.fromkeys(node_name for _, node_name in role_candidates(nodes, role, None, False)[0] if node_name))[:MAX_CANDIDATES]
+        names = list(dict.fromkeys(node_name for _, node_name in role_candidates(nodes, role, None, False)[0] if node_name))
+        close = closest_names(name, names) if name is not None else names[:MAX_CANDIDATES]
         named = f' named "{name}"' if name is not None else ""
         hint = f"; the {shown}s here are: " + ", ".join(f'"{snapshot.shown_name(text)}"' for text in close) if close and name is not None else ""
         raise BrowseError(f"No {shown}{named} on this page{hint}", data={"candidates": close}, code="not_found")
