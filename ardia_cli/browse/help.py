@@ -74,7 +74,7 @@ React:       react tree | inspect <id> | renders start|stop | suspense [--only-d
 Performance: vitals [url]
 Audit:       a11y [url] [--tags t1,t2] [--selector css]
 Init:        addinitscript <js> | removeinitscript <id>   (page main world, by request)
-Batch:       batch [--bail] ["cmd args" | '["cmd","arg"]' ...]  (or one command per stdin line; # comments)
+Batch:       batch [--bail] [--out <file>] ["cmd args" | '["cmd","arg"]' ...]  (or one command per stdin line; # comments)
 Script:      script [file.js] [--timeout 90s]   (JS on stdin: loops over pages with page.goto/click/text, read())
 Notes:       notes [get|set|append|list|rm] [site] [text|-]   (plain per-site notes, shown atop snapshot)
 Flows:       flow steps | save <name> [--param k=v] | run <name> [--param k=v] [--fields a,b] [--where f=v] [--limit n]
@@ -245,7 +245,7 @@ COMMANDS = {
             "Passwords live in the macOS login Keychain (via /usr/bin/security, written on its stdin, never argv).\n"
             "--password is refused. login checks the page's committed origin and frame against the saved https\n"
             "origins before typing and stops if the page navigates, the frame changes or focus leaves the field.",
-    "batch": "ardia browse batch [--bail] [\"cmd args\" | '[\"cmd\",\"arg\"]' ...]\n\nRuns commands in order in one call; without arguments, one command per stdin line (a heredoc\n"
+    "batch": "ardia browse batch [--bail] [--out <file>] [\"cmd args\" | '[\"cmd\",\"arg\"]' ...]\n\n--out <file> saves everything the batch prints and shows which lines failed.\nRuns commands in order in one call; without arguments, one command per stdin line (a heredoc\n"
              "works; blank lines and # lines are skipped). Lines use shell quoting or a JSON array. Each answer,\n"
              "with its changes, is printed in order. --bail stops at the first failure. A line takes its command's\n"
              "own flags and per-command ones like --full, --no-changes or --humanize. `close` as the last line ends the\n"

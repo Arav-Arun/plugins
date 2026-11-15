@@ -2024,9 +2024,27 @@ def save_batch_line(ctx: Ctx, name: str, result, path: str) -> str:
     return f"✓ Saved to {target} ({len(text):,} characters): {summary}"
 
 
+def save_batch(ctx: Ctx, path: str, text: str, outcomes: list[dict]) -> str:
+    from ardia_cli import command_metrics
+    from ardia_cli.browse import outfile
+
+    failed = [f"✗ {' '.join(outcome['command'])}: {outcome['error']}" for outcome in outcomes if not outcome["success"]]
+    if not text.strip():
+        return "\n".join([f"✗ The batch printed nothing, so {path} wasn't written", *failed])
+    try:
+        target = outfile.save(ctx.path(path), text)
+    except (OSError, Usage) as error:
+        reason = error.message if isinstance(error, Usage) else (error.strerror or str(error))
+        return f"✗ Couldn't write {path}: {reason}\n{text}"
+    command_metrics.flag("saved_to_file", True)
+    command_metrics.flag("batch_saved", True)
+    lines = len(outcomes) - len(failed)
+    return "\n".join([f"✓ Saved the output of {lines} of {len(outcomes)} lines to {target} ({len(text):,} characters)", *failed])
+
+
 @command("batch")
 async def cmd_batch(ctx: Ctx, argv):
-    options, args = parse(argv, {"--bail": "bool"})
+    options, args = parse(argv, {"--bail": "bool", "--out": "value"})
     lines = args if args else [line for line in (ctx.stdin or "").splitlines() if line.strip() and not line.lstrip().startswith("#")]
     runs = []
     for line in lines:
@@ -2089,6 +2107,8 @@ async def cmd_batch(ctx: Ctx, argv):
             outcomes.append({"command": ["close"], "success": False, "result": None, "code": "not_run", "text": None,
                              "error": "close not run: an earlier line failed or didn't run, so the session stays open"})
     text = "\n\n".join((outcome["text"] if outcome["success"] or outcome.get("text") else f"✗ {outcome['error']}") or "" for outcome in outcomes)
+    if options.get("out"):
+        text = save_batch(ctx, options["out"], text, outcomes)
     for outcome in outcomes:
         outcome.pop("text", None)
     result = Result({"results": outcomes}, text)

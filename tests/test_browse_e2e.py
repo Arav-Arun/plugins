@@ -935,6 +935,17 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertEqual(read.returncode, 0, read.stderr)
         self.assertIn("Result card 12", read.stdout)
 
+    def test_batch_out_saves_everything_the_batch_printed(self):
+        session = "batch-out"
+        self.browse("open", self.url("many.html"), session=session)
+        target = self.data / "out" / "batch.txt"
+        said = self.browse("batch", "get title", "get url", "click #nothing-here", "--out", str(target), session=session, check=False).stdout
+        saved = target.read_text()
+        self.assertIn(self.browse("get", "title", session=session).stdout.strip(), saved)
+        self.assertIn("many.html", saved)
+        self.assertIn("✓ Saved the output of 2 of 3 lines to", said)
+        self.assertIn("✗ click #nothing-here:", said)
+
     def test_unquoted_attribute_values_work_in_selectors_and_eval_says_how_to_quote(self):
         session = "unquoted"
         self.browse("open", self.url("many.html"), "--show", session=session)
