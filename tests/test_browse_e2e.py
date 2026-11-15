@@ -846,6 +846,17 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("is", "visible", "#never", session=session, check=False)
         self.assertNotIn("waited", missing.stdout + missing.stderr)
 
+    def test_eval_waits_for_slow_page_code_as_long_as_its_timeout_allows(self):
+        session = "slow-eval"
+        self.browse("open", self.url("many.html"), session=session)
+        slow = "new Promise((done) => setTimeout(() => done('settled'), 2500))"
+        cut = self.browse("eval", slow, "--timeout", "1s", session=session, check=False)
+        self.assertNotEqual(cut.returncode, 0)
+        self.assertIn("didn't finish within 1 s", cut.stderr)
+        self.assertIn("eval --timeout 5m", cut.stderr)
+        self.assertNotIn("Ardia didn't answer", cut.stderr)
+        self.assertIn("settled", self.browse("eval", slow, "--timeout", "10s", session=session).stdout)
+
     def test_a_dropped_connection_says_to_try_another_way_in(self):
         import threading
 

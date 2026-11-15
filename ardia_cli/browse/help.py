@@ -38,7 +38,7 @@ Core Commands:
   screenshot [sel] [path]    Screenshot [--full] [--annotate]
   pdf <path>                 Save as PDF
   snapshot                   Accessibility tree with refs [-i] [-c] [-d n] [-s sel] [-u] [--diff]
-  eval <js>                  Run JavaScript in the page [-b base64] [--stdin]
+  eval <js>                  Run JavaScript in the page [-b base64] [--stdin] [--timeout 2m]
   close [--all]              Close the tabs this session opened and end the session
 
 Selectors:   CSS, @e3, text=Save (text="Save" exact), role=button[name="Save"], li:has-text("Ana"), li >> nth=2 (third match; -1 last), main >> text=Save, li:text-is("Ana"), xpath=//a;
@@ -210,7 +210,7 @@ COMMANDS = {
                   "--if-changed saves nothing and says so when this view looks the same as at its last screenshot (under --threshold percent of pixels changed, 0.5 by default).\n"
                   "--annotate takes an interactive snapshot and draws the numbered labels onto the image (nothing is added\n"
                   "to the page). Without a path it saves under $TMPDIR/ardia-browse/screenshots.",
-    "eval": "ardia browse eval <js> | -b <base64> | --stdin [--out <file>]\n\nRuns in the page's main world (the one place, with init scripts and the React hook, that does).\n"
+    "eval": "ardia browse eval <js> | -b <base64> | --stdin [--timeout 2m] [--out <file>]\n\nWaits up to 60 s for the promise the code returns; --timeout gives it longer, up to 10m.\n\nRuns in the page's main world (the one place, with init scripts and the React hook, that does).\n"
             "--out <file> saves the whole value (JSON, or the text as is) and prints a short summary instead.",
     "get": "ardia browse get text|html|value|attr <name>|title|url|count|box|styles <sel>\n\ncdp-url works only with --port or --ws: the real URL carries Ardia's token.",
     "find": "ardia browse find <role|text|label|placeholder|alt|title|testid|first|last|nth> <value> [action] [text] [--name n] [--exact|--partial]\n\n"

@@ -1045,8 +1045,11 @@ def glob_match(pattern: str, url: str) -> bool:
     return re.fullmatch(regex, url) is not None
 
 
-async def evaluate_main(page, expression: str):
-    result = await page.send("Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True, "userGesture": False}, timeout=60, mutation=True)
+EVAL_TIMEOUT = 60.0
+
+
+async def evaluate_main(page, expression: str, timeout: float = EVAL_TIMEOUT):
+    result = await page.send("Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True, "userGesture": False}, timeout=timeout, mutation=True)
     if "exceptionDetails" in result:
         details = result["exceptionDetails"]
         description = (details.get("exception") or {}).get("description") or details.get("text") or "error"
@@ -1061,18 +1064,29 @@ async def evaluate_main(page, expression: str):
 
 @command("eval")
 async def cmd_eval(ctx: Ctx, argv):
-    options, args = parse(argv, {"--base64": "bool", "--stdin": "bool"}, {"-b": "--base64"})
+    from ardia_cli.browse.script import MAX_TIMEOUT, parse_timeout
+
+    options, args = parse(argv, {"--base64": "bool", "--stdin": "bool", "--timeout": "value"}, {"-b": "--base64"})
+    limit = parse_timeout(options["timeout"]) if options.get("timeout") else EVAL_TIMEOUT
     if options.get("stdin"):
         script = ctx.stdin or ""
     else:
-        need(args, 1, "eval <js> | -b <base64> | --stdin")
+        need(args, 1, "eval <js> | -b <base64> | --stdin [--timeout 2m]")
         script = " ".join(args)
         if options.get("base64"):
             script = base64.b64decode(script).decode("utf-8")
     page = await ctx.state.page()
     if FETCHING.search(script):
         hint_once(ctx.state, "fetch", FETCH_HINT)
-    value = await evaluate_main(page, script)
+    try:
+        value = await evaluate_main(page, script, limit)
+    except OutcomeUnknown:
+        from ardia_cli import command_metrics
+
+        command_metrics.flag("eval_timed_out", True)
+        raise BrowseError(f"The page's code didn't finish within {limit:g} s (eval waits for the promise it returns), so eval stopped waiting; "
+                          f"it may still be running in the page. Give it longer with `eval --timeout 5m` (up to {MAX_TIMEOUT / 60:g}m), "
+                          "or split the work into smaller batches", code="timeout") from None
     origin = page.frames.get(page.main_frame, {}).get("origin") or ""
     return Result({"origin": origin + "/" if origin and not origin.endswith("/") else origin, "result": value}, render_json(value), page_content=True)
 
