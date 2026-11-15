@@ -362,6 +362,16 @@ LIBRARY = r"""
       root = root || document.body || document.documentElement;
       const lines = [];
       const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "HEAD", "IFRAME"]);
+      const iconLabel = (el) => {
+        if (el.getAttribute("aria-hidden") === "true") return "";
+        const own = norm(el.getAttribute("aria-label") || "");
+        if (own) return own;
+        if (el.tagName === "SVG" || el.tagName === "svg") {
+          const title = el.querySelector("title");
+          return title ? norm(title.textContent || "") : "";
+        }
+        return "";
+      };
       const BLOCK = /^(P|DIV|SECTION|ARTICLE|MAIN|HEADER|FOOTER|NAV|ASIDE|FORM|FIELDSET|UL|OL|TABLE|TR|BLOCKQUOTE|PRE|FIGURE|DETAILS|DL|DT|DD|ADDRESS|HR|BR|LABEL|SELECT|TEXTAREA|BUTTON)$/;
       const CELL_ROLES = new Set(["gridcell", "cell", "columnheader", "rowheader"]);
       const GRID_ROLES = new Set(["grid", "treegrid", "table"]);
@@ -382,10 +392,20 @@ LIBRARY = r"""
       const walk = (node) => {
         if (node.nodeType === 3) { buffer += node.nodeValue; return; }
         if (node.nodeType !== 1) return;
+        if (node.tagName === "SVG" || node.tagName === "svg") {
+          const label = iconLabel(node);
+          if (label) buffer += " [" + label + "] ";
+          return;
+        }
         if (SKIP.has(node.tagName)) return;
         const style = getComputedStyle(node);
         if (style.display === "none" || style.visibility === "hidden") return;
         const tag = node.tagName;
+        if (!/^(INPUT|SELECT|TEXTAREA|IMG|A|BUTTON)$/.test(tag) && node.hasAttribute("aria-label") && !norm(node.textContent || "")) {
+          const label = iconLabel(node);
+          if (label) buffer += " [" + label + "] ";
+          return;
+        }
         if (row) {
           if (isCell(node)) {
             if (row.cells++) buffer += " | ";

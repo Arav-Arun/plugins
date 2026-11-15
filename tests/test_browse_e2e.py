@@ -846,6 +846,14 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("is", "visible", "#never", session=session, check=False)
         self.assertNotIn("waited", missing.stdout + missing.stderr)
 
+    def test_read_keeps_the_labels_of_icons_beside_values(self):
+        out = self.browse("read", self.url("iconlabels.html"), session="iconlabels").stdout
+        self.assertIn("[Customer care] 1-800-111-2222", out)
+        self.assertIn("[Sales] 1-800-333-4444", out)
+        self.assertIn("[Pro desk] 1-800-555-6666", out)
+        self.assertNotIn("Decoration", out)
+        self.assertIn("Plain text stays.", out)
+
     def test_fill_says_when_the_page_has_not_reacted_yet(self):
         session = "qty"
         self.browse("open", self.url("qty.html"), "--show", session=session)
