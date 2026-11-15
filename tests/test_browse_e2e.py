@@ -989,7 +989,10 @@ class BrowseEndToEnd(unittest.TestCase):
         self.browse("click", "[aria-label=Number of bedrooms]", session=session)
         self.assertEqual(self.browse("get", "title", session=session).stdout.strip(), "beds picked")
         self.assertIn("Beds", self.browse("get", "text", "button[data-path*=/en/plp/]", session=session).stdout)
-        bad = self.browse("eval", "document.querySelector('a[href*=/en/plp/]')", session=session, check=False)
+        fixed = self.browse("eval", "document.querySelector('button[data-path*=/en/plp/]').textContent", session=session).stdout
+        self.assertIn("Beds", fixed)
+        self.assertIn('quoted the attribute values in button[data-path*="/en/plp/"]', fixed)
+        bad = self.browse("eval", "document.querySelector(['a[href*=/en/plp/]'].join(''))", session=session, check=False)
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn('needs quotes in CSS: a[href*="/path/"]', bad.stderr)
 

@@ -1128,6 +1128,7 @@ async def cmd_eval(ctx: Ctx, argv):
     page = await ctx.state.page()
     if FETCHING.search(script):
         hint_once(ctx.state, "fetch", FETCH_HINT)
+    script, quoted = quote_selector_literals(script)
     try:
         value = await evaluate_main(page, script, limit)
     except OutcomeUnknown as error:
@@ -1140,7 +1141,40 @@ async def cmd_eval(ctx: Ctx, argv):
                              f"be running in the page. Give it longer with `eval --timeout 5m` (up to {MAX_TIMEOUT / 60:g}m), "
                              "or split the work into smaller batches") from None
     origin = page.frames.get(page.main_frame, {}).get("origin") or ""
-    return Result({"origin": origin + "/" if origin and not origin.endswith("/") else origin, "result": value}, render_json(value), page_content=True)
+    text = render_json(value)
+    if quoted:
+        from ardia_cli import command_metrics
+
+        command_metrics.flag("eval_selectors_quoted", True)
+        text += "\n(quoted the attribute values in " + ", ".join(quoted) + ", which CSS needs for values with spaces or punctuation)"
+    return Result({"origin": origin + "/" if origin and not origin.endswith("/") else origin, "result": value}, text, page_content=True)
+
+
+SELECTOR_CALL = re.compile(r"""\b(querySelectorAll|querySelector|closest|matches)\(\s*(['"])((?:\\.|(?!\2).)*)\2""")
+UNQUOTED_VALUE = re.compile(r"""\[\s*([^\s~|^$*!=\]"']+)\s*([~|^$*]?=)\s*([^"'\]\s][^\]]*?)(\s+[iIsS])?\s*\]""")
+PLAIN_VALUE = re.compile(r"-?[A-Za-z_][\w-]*")
+
+
+def quote_selector_literals(script: str) -> tuple[str, list[str]]:
+    quoted = []
+
+    def fix_call(match):
+        name, quote, selector = match.groups()
+        inner = "'" if quote == '"' else '"'
+
+        def fix_value(part):
+            attribute, op, value, flag = part.groups()
+            if PLAIN_VALUE.fullmatch(value.strip()):
+                return part.group(0)
+            return f"[{attribute}{op}{inner}{value.strip()}{inner}{flag or ''}]"
+
+        fixed = UNQUOTED_VALUE.sub(fix_value, selector)
+        if fixed == selector:
+            return match.group(0)
+        quoted.append(fixed)
+        return f"{name}({quote}{fixed}{quote}"
+
+    return SELECTOR_CALL.sub(fix_call, script), quoted
 
 
 @command("get")
