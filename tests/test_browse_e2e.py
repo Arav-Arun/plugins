@@ -401,6 +401,22 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertTrue(moved["background"])
         self.assertEqual(self.browse("get", "url", session="attach-src").stdout, self.url("login.html#attach") + "\n")
 
+    def test_a_background_tab_tells_its_first_script_the_window_it_belongs_to(self):
+        self.browse("open", self.url("geometry.html"), "--show", session="geometry-shown")
+        for attempt in range(3):
+            session = f"geometry-{attempt}"
+            self.browse("open", self.url("geometry.html"), session=session)
+            seen = json.loads(self.browse("eval", "JSON.stringify(window.geometryAtHead)", session=session).stdout)
+            outer_width, outer_height, inner_width, inner_height, left, top, screen_width, screen_height = json.loads(seen)
+            self.assertGreater(inner_width, 0, seen)
+            self.assertGreater(inner_height, 0, seen)
+            self.assertGreaterEqual(outer_width, inner_width, seen)
+            self.assertGreater(outer_height, inner_height, seen)
+            self.assertLess(left, screen_width, seen)
+            self.assertLess(top, screen_height, seen)
+            self.browse("close", session=session)
+        self.browse("close", session="geometry-shown")
+
     def test_site_notes_show_in_snapshots(self):
         session = "notes"
         site = f"127.0.0.1:{self.http_port}"
