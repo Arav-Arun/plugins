@@ -1074,6 +1074,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn("Kombucha starter kit", out)
         self.assertNotIn("page says", out)
 
+    def test_text_with_half_an_emoji_still_reads(self):
+        session = "surrogate"
+        out = self.browse("read", self.url("surrogate.html"), session=session).stdout
+        self.assertIn("Handshake \ufffd then Tue Botanicals \U0001f91d", out)
+        self.browse("open", self.url("surrogate.html"), session=session)
+        self.assertIn("\ufffd", self.browse("get", "text", "#team", session=session).stdout)
+
     def test_read_runs_beside_a_session_busy_with_a_script(self):
         session = "busy"
         self.browse("open", self.url("picker.html"), session=session)

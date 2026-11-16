@@ -5,6 +5,7 @@ from contextlib import contextmanager
 FIELD_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 TEXT_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 JSON_CONTROLS = re.compile(r"[\x7f-\x9f]")
+LONE_SURROGATES = re.compile("[\ud800-\udfff]")
 
 
 def _escaped(found) -> str:
@@ -22,6 +23,12 @@ def inert(text: str) -> str:
 
 def json_safe(text: str) -> str:
     return JSON_CONTROLS.sub(_escaped, text)
+
+
+def well_formed(text: str) -> str:
+    if not LONE_SURROGATES.search(text):
+        return text
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
 class InertStream:
