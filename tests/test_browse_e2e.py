@@ -1092,6 +1092,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertRegex(last, r"^\[read \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]$")
         self.assertIn("readAt", self.browse("read", "--json", session=session).stdout)
 
+    def test_scroll_read_waits_at_the_bottom_for_a_feed_that_loads_slowly(self):
+        session = "slow-feed"
+        self.browse("open", self.url("slowfeed.html"), "--show", session=session)
+        out = self.browse("read", "-s", "#feed", "--scroll", "--timeout", "60000", session=session).stdout
+        self.assertIn("Maker 500", out)
+        self.assertIn("[500 rows; scrolled to the end of the list]", out)
+
     def test_text_with_half_an_emoji_still_reads(self):
         session = "surrogate"
         out = self.browse("read", self.url("surrogate.html"), session=session).stdout

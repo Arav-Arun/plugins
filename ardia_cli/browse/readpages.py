@@ -101,6 +101,7 @@ SCROLL_QUIET = 0.1
 SCROLL_SETTLE = 1.5
 SCROLL_BUSY_SETTLE = 8.0
 SCROLL_POLL = 0.04
+SCROLL_END_WAIT = 3.0
 
 SCROLL_STEP = r"""(selector, action, to) => {
   const ROW = "[role=option], [role=row], [role=listitem], [role=treeitem], [role=article], [role=feed] > *, li, tr, article";
@@ -847,6 +848,26 @@ async def settle_rows(page, frame, target, collector: RowCollector, deadline: fl
         await asyncio.sleep(SCROLL_POLL)
 
 
+async def wait_at_bottom(page, frame, target, collector: RowCollector, current: dict, until: float) -> dict | None:
+    from ardia_cli import command_metrics
+
+    loop = asyncio.get_running_loop()
+    height, rows = current["height"], len(collector.rows)
+    nudged = False
+    while loop.time() < until:
+        await asyncio.sleep(0.25)
+        if not nudged and loop.time() >= until - SCROLL_END_WAIT / 2:
+            nudged = True
+            await scroll_step(page, frame, target, "restore", max(current["position"] - current["view"] * 0.5, 0))
+            await scroll_step(page, frame, target, "next")
+        step = await scroll_step(page, frame, target, "peek")
+        collector.absorb(step)
+        if step["height"] > height or len(collector.rows) > rows:
+            command_metrics.flag("read_scroll_waited_at_end", True)
+            return await settle_rows(page, frame, target, collector, until + SCROLL_SETTLE)
+    return None
+
+
 async def scroll_rows(page, frame, target, limit: int, timeout: float) -> tuple[list[dict], str, dict]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -868,7 +889,10 @@ async def scroll_rows(page, frame, target, limit: int, timeout: float) -> tuple[
             collector.absorb(moved)
             current = await settle_rows(page, frame, target, collector, deadline)
             if not moved["moved"] and current["height"] <= height and current["position"] + current["view"] >= current["height"] - 2:
-                break
+                grown = await wait_at_bottom(page, frame, target, collector, current, min(deadline, loop.time() + SCROLL_END_WAIT))
+                if grown is None:
+                    break
+                current = grown
     finally:
         try:
             await scroll_step(page, frame, target, "restore", origin)
