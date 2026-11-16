@@ -1842,7 +1842,7 @@ async def wait_download(ctx: Ctx, trigger, destination: str | None, timeout: flo
 
     def listener(_page, method, params):
         if method == "Browser.downloadWillBegin" and not seen:
-            seen.update(guid=params.get("guid"), name=params.get("suggestedFilename") or "download")
+            seen.update(guid=params.get("guid"), name=params.get("suggestedFilename") or "download", url=params.get("url") or "")
         if method == "Browser.downloadProgress" and params.get("guid") == seen.get("guid") and params.get("state") in ("completed", "canceled") and not done.done():
             done.set_result(params.get("state"))
 
@@ -1862,8 +1862,44 @@ async def wait_download(ctx: Ctx, trigger, destination: str | None, timeout: flo
     if outcome != "completed":
         raise BrowseError("The download was canceled")
     target = destination or os.path.join(folder, os.path.basename(seen["name"]))
-    os.replace(os.path.join(folder, seen["guid"]), target)
+    saved = os.path.join(folder, seen["guid"])
+    if os.path.exists(saved):
+        os.replace(saved, target)
+    else:
+        Path(target).write_bytes(await fetch_again(ctx, seen.get("url") or ""))
     return target
+
+
+DOWNLOAD_FETCH_LIMIT = 50 * 1024 * 1024
+FETCH_BYTES = """async (url, limit) => {
+  const response = await fetch(url, { credentials: "include" });
+  if (!response.ok) return { status: response.status };
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > limit) return { size: bytes.length };
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return { data: btoa(text) };
+}"""
+
+
+async def fetch_again(ctx: Ctx, url: str) -> bytes:
+    from ardia_cli import command_metrics
+
+    remote = ("The browser saved the file on its own machine (a browser reached with --ws on another host), "
+              "and fetching it again from the page failed")
+    if not url:
+        raise BrowseError(f"{remote}: the download had no address", code="download_remote")
+    page = await ctx.state.page()
+    try:
+        got = await page.call(FETCH_BYTES, url, DOWNLOAD_FETCH_LIMIT, frame=page.main_frame, read=True)
+    except BrowseError as error:
+        raise BrowseError(f"{remote}: {error.message}", code="download_remote") from None
+    if not got or got.get("status"):
+        raise BrowseError(f"{remote}: HTTP {got.get('status') if got else 'no answer'}", code="download_remote")
+    if got.get("size"):
+        raise BrowseError(f"{remote}: the file is {got['size']:,} bytes, over the {DOWNLOAD_FETCH_LIMIT:,}-byte limit", code="download_remote")
+    command_metrics.flag("download_fetched_again", True)
+    return base64.b64decode(got["data"])
 
 
 @command("download")
