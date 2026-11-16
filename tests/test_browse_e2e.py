@@ -1085,6 +1085,13 @@ class BrowseEndToEnd(unittest.TestCase):
             self.assertNotIn("Tiny tracker", out)
         self.assertIn('[frame "Partner board" from another site, not read here: read http://localhost:', self.browse("read", session=session).stdout)
 
+    def test_a_read_of_the_tab_says_when_it_read_it(self):
+        session = "read-time"
+        self.browse("open", self.url("scopebadge.html"), session=session)
+        last = self.browse("read", session=session).stdout.rstrip().splitlines()[-1]
+        self.assertRegex(last, r"^\[read \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]$")
+        self.assertIn("readAt", self.browse("read", "--json", session=session).stdout)
+
     def test_text_with_half_an_emoji_still_reads(self):
         session = "surrogate"
         out = self.browse("read", self.url("surrogate.html"), session=session).stdout
@@ -1260,7 +1267,7 @@ class BrowseEndToEnd(unittest.TestCase):
         out = self.browse("read", self.url("results.html"), self.url("picker.html"), session=session).stdout
         self.assertIn('(scope: page says "1–20 of 340 results"; has a Next page link, pages up to 17)', out)
         self.browse("open", self.url("results.html"), session=session)
-        self.assertTrue(self.browse("read", session=session).stdout.rstrip().endswith('[scope: page says "1–20 of 340 results"; has a Next page link, pages up to 17]'))
+        self.assertEqual(self.browse("read", session=session).stdout.rstrip().splitlines()[-2], '[scope: page says "1–20 of 340 results"; has a Next page link, pages up to 17]')
 
     def test_click_falls_back_to_a_dom_click_off_the_page(self):
         session = "carousel"

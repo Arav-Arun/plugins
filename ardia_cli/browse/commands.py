@@ -1969,9 +1969,11 @@ async def cmd_read(ctx: Ctx, argv):
     content = readurl.post_process(content, options)
     readpages.note_virtualized(content)
     scope = "" if options.get("selector") else await page_scope(page, frame)
+    read_time = readpages.read_at()
     shown = f"{content}\n[scope: {scope}]" if scope else (content or empty_note)
+    shown = f"{shown}\n[read {read_time}]" if shown else shown
     return Result({"content": content, "contentType": "text/html", "finalUrl": page.url, "source": "active-tab-html", "truncated": False, "url": page.url,
-                   "scope": scope or None}, shown, page_content=True)
+                   "scope": scope or None, "readAt": read_time}, shown, page_content=True)
 
 
 def render_json(value) -> str:
