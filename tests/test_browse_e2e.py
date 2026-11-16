@@ -1057,6 +1057,18 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn("Claims trainee, remote", done.stdout)
         self.assertIn("the page was still loading after 2.5 s; this is the part that had arrived", done.stdout)
 
+    def test_settling_sees_results_drawn_inside_shadow_roots(self):
+        from ardia_cli.browse.readpages import SETTLE_PROBE
+
+        session = "shadow-settle"
+        self.browse("open", self.url("shadowresults.html"), "--show", session=session)
+        probe = f"({SETTLE_PROBE})()"
+        before = json.loads(self.browse("eval", probe, session=session).stdout)[1]
+        self.browse("eval", "document.querySelector('search-app').shadowRoot.append(Object.assign(document.createElement('result-tile'), "
+                    "{textContent: 'Sales associate guide, 2004'}))", session=session)
+        after = json.loads(self.browse("eval", probe, session=session).stdout)[1]
+        self.assertNotEqual(before, after)
+
     def test_read_runs_beside_a_session_busy_with_a_script(self):
         session = "busy"
         self.browse("open", self.url("picker.html"), session=session)
