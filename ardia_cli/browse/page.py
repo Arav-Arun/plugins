@@ -144,6 +144,7 @@ class Page:
         self.request_sizes: dict = {}
         self.requests_dropped = 0
         self.fetches_started: dict = {}
+        self.fetch_loaders: dict = {}
         self.fetches_busy_until = 0.0
         self.runtime_on = False
         self.network_on = False
@@ -162,6 +163,7 @@ class Page:
         self.dropped: set = set()
         self.crashed = False
         self.needs_enable = False
+        self.awake = False
 
     async def attach(self, browser):
         self.browser = browser
@@ -202,6 +204,8 @@ class Page:
             await self.enable_network()
         if self.needs_restore:
             await self.restore_setup()
+        if self.awake or self.target_id in self.state.opened:
+            await self.keep_awake()
         viewport = None
         try:
             metrics = await self.send("Page.getLayoutMetrics")
@@ -211,6 +215,19 @@ class Page:
             pass
         self.input.bind(viewport)
         self.needs_enable = False
+
+    async def keep_awake(self):
+        from ardia_cli import command_metrics
+
+        endpoint = self.state.endpoint
+        if endpoint is None or not endpoint.explicit:
+            return
+        try:
+            await self.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+        except BrowseError:
+            return
+        self.awake = True
+        command_metrics.flag("tab_kept_awake", True)
 
     async def restore_setup(self):
         from ardia_cli import command_metrics
@@ -649,12 +666,18 @@ class Page:
                 now = time.monotonic()
                 if len(self.fetches_started) >= FETCHES_TRACKED:
                     self.fetches_started = {key: started for key, started in self.fetches_started.items() if now - started < FETCH_FRESH}
+                    self.fetch_loaders = {key: self.fetch_loaders[key] for key in self.fetches_started if key in self.fetch_loaders}
                 if len(self.fetches_started) >= FETCHES_TRACKED:
-                    oldest = self.fetches_started.pop(next(iter(self.fetches_started)))
+                    oldest_id = next(iter(self.fetches_started))
+                    oldest = self.fetches_started.pop(oldest_id)
+                    self.fetch_loaders.pop(oldest_id, None)
                     self.fetches_busy_until = max(self.fetches_busy_until, oldest + FETCH_FRESH)
                 self.fetches_started[request_id] = now
+                if params.get("loaderId"):
+                    self.fetch_loaders[request_id] = params["loaderId"]
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
             self.fetches_started.pop(request_id, None)
+            self.fetch_loaders.pop(request_id, None)
 
     def account_request(self, request_id):
         record = self.requests.get(request_id)

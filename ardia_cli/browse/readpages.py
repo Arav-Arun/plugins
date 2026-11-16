@@ -431,6 +431,7 @@ async def open_reader(state, opened: list[str]):
     state.target_infos.setdefault(target_id, {"targetId": target_id, "url": "about:blank", "title": "", "type": "page"})
     page = state.pages[target_id] = Page(state, target_id)
     await page.attach(state.browser)
+    await page.keep_awake()
     await page.enable_network()
     return page
 
@@ -511,6 +512,7 @@ async def goto(ctx, page, url: str, timeout: float, keep_partial: bool = False) 
     deadline = loop.time() + timeout
     before = await before_navigating(page, url)
     earlier = frozenset(page.fetches_started)
+    old_loaders = frozenset(frame["loader"] for frame in page.frames.values() if frame.get("loader"))
     page.fetches_busy_until = 0.0
     try:
         result = await page.send("Page.navigate", {"url": url}, timeout=timeout)
@@ -537,6 +539,7 @@ async def goto(ctx, page, url: str, timeout: float, keep_partial: bool = False) 
             await wait_for_load(page, loader, min(LOAD_GRACE, max(deadline - loop.time(), 0.1)), "load")
         except BrowseError:
             pass
+        earlier |= frozenset(request_id for request_id, fetch_loader in page.fetch_loaders.items() if fetch_loader in old_loaders)
         await settle(page, min(deadline, loop.time() + SETTLE_LIMIT), earlier)
     else:
         await after_same_document(page, before, deadline, earlier)
