@@ -430,9 +430,27 @@ async def collect_links(ctx, pattern: str):
 
 async def open_reader(state, opened: list[str]):
     from ardia_cli.browse import temptabs
+
+    in_window = bool(state.extras.get("reader_windows"))
+    page = await attach_reader(state, opened, in_window)
+    if in_window or state.endpoint is None or not state.endpoint.explicit or await page.takes_input():
+        return page
+    from ardia_cli import command_metrics
+
+    hidden = page.target_id
+    opened.remove(hidden)
+    state.pages.pop(hidden, None)
+    await temptabs.release(state, [hidden])
+    state.extras["reader_windows"] = True
+    command_metrics.flag("reader_own_window", True)
+    return await attach_reader(state, opened, True)
+
+
+async def attach_reader(state, opened: list[str], window: bool):
+    from ardia_cli.browse import temptabs
     from ardia_cli.browse.page import Page
 
-    target_id = await temptabs.create(state, opened)
+    target_id = await temptabs.create(state, opened, window)
     state.target_infos.setdefault(target_id, {"targetId": target_id, "url": "about:blank", "title": "", "type": "page"})
     page = state.pages[target_id] = Page(state, target_id)
     await page.attach(state.browser)

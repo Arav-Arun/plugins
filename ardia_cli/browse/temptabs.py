@@ -22,7 +22,7 @@ async def settle_then_cancel(task):
     return task.result()
 
 
-async def create(state, owned: list[str]) -> str:
+async def create(state, owned: list[str], window: bool = False) -> str:
     from ardia_cli.browse.errors import Gated
 
     registry = state.registry
@@ -30,7 +30,7 @@ async def create(state, owned: list[str]) -> str:
 
     async def make():
         try:
-            result = await state.browser.send("Target.createTarget", {"url": "about:blank", "background": True})
+            result = await state.browser.send("Target.createTarget", {"url": "about:blank", "background": True, **({"newWindow": True} if window else {})})
         except BaseException as error:
             give_back(state, slot)
             if isinstance(error, Gated):
