@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ardia_cli.browse.errors import BrowseError, ConnectionLost, Usage
@@ -433,16 +434,11 @@ async def probe(page):
         return None, None, True
 
 
-def fetching(page, seen: dict, earlier: frozenset, now: float) -> bool:
+def fetching(page, earlier: frozenset) -> bool:
     if not page.network_on:
         return False
-    pending = False
-    for request_id, record in page.requests.items():
-        if request_id in earlier or record.get("finished") is not None or record.get("resourceType") not in ("XHR", "Fetch"):
-            continue
-        first = seen.setdefault(request_id, now)
-        pending = pending or now - first < FETCH_FRESH
-    return pending
+    now = time.monotonic()
+    return any(request_id not in earlier and now - started < FETCH_FRESH for request_id, started in page.fetches_started.items())
 
 
 async def settle(page, deadline: float, earlier: frozenset = frozenset()):
@@ -451,11 +447,10 @@ async def settle(page, deadline: float, earlier: frozenset = frozenset()):
     loop = asyncio.get_running_loop()
     last = None
     since = loop.time()
-    seen: dict = {}
     while loop.time() < deadline:
         ready, fingerprint, busy = await probe(page)
         now = loop.time()
-        if not busy and fetching(page, seen, earlier, now):
+        if not busy and fetching(page, earlier):
             busy = True
             command_metrics.flag("read_waited_for_requests", True)
         if (ready, fingerprint, busy) != last:
@@ -497,14 +492,14 @@ async def arrived_text(page, loader: str) -> bool:
     return page.loader(page.main_frame) == loader and bool(length)
 
 
-async def goto(ctx, page, url: str, timeout: float) -> str | None:
+async def goto(ctx, page, url: str, timeout: float, keep_partial: bool = False) -> str | None:
     from ardia_cli.browse.commands import wait_for_load
     from ardia_cli.browse.errors import Gated
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     before = await before_navigating(page, url)
-    earlier = frozenset(page.requests)
+    earlier = frozenset(page.fetches_started)
     try:
         result = await page.send("Page.navigate", {"url": url}, timeout=timeout)
     except Gated:
@@ -516,7 +511,7 @@ async def goto(ctx, page, url: str, timeout: float) -> str | None:
         try:
             await wait_for_load(page, loader, max(deadline - loop.time(), 0.1), "domcontentloaded")
         except BrowseError as error:
-            if error.code != "timeout" or not await arrived_text(page, loader):
+            if not keep_partial or error.code != "timeout" or not await arrived_text(page, loader):
                 raise
             from ardia_cli import command_metrics
 
@@ -597,7 +592,7 @@ async def read_in(ctx, page, url: str, selector: str | None, timeout: float, opt
 
     record = {"url": url, "source": "browser"}
     try:
-        partial = await goto(ctx, page, url, timeout)
+        partial = await goto(ctx, page, url, timeout, keep_partial=True)
         if await pdftext.page_is_pdf(page):
             record.update(finalUrl=page.url, title=page.url.rsplit("/", 1)[-1], source="pdf",
                           text=readurl.post_process(await pdftext.page_text(page), options))

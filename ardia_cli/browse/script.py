@@ -422,6 +422,8 @@ async def drive(ctx, page, handle: str, source: str, current: dict, done: list |
         message = await control(page, handle, "function () { return this.next(); }", timeout=MAX_TIMEOUT + 30)
         if message.get("kind") != "request":
             return message
+        if isinstance(message.get("argv"), list) and all(isinstance(word, str) for word in message["argv"]):
+            message["argv"] = split_command_line(message["argv"])
         current.clear()
         current.update(message)
         if message.get("type") == "sleep":

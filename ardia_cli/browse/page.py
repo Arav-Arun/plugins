@@ -20,6 +20,7 @@ WORLD_NAME = "ardia-browse"
 CONSOLE_LIMIT = 1000
 ERROR_LIMIT = 500
 REQUEST_LIMIT = 1000
+FETCHES_TRACKED = 256
 RECORD_TEXT_LIMIT = 64 * 1024
 HEADER_VALUE_LIMIT = 8 * 1024
 HEADERS_LIMIT = 64 * 1024
@@ -141,6 +142,7 @@ class Page:
         self.requests: collections.OrderedDict = collections.OrderedDict()
         self.request_sizes: dict = {}
         self.requests_dropped = 0
+        self.fetches_started: dict = {}
         self.runtime_on = False
         self.network_on = False
         self.input = Input(self)
@@ -595,6 +597,7 @@ class Page:
         request_id = params.get("requestId")
         if not request_id:
             return
+        self.track_fetch(method, request_id, params)
         if method == "Network.requestWillBeSent":
             request = params.get("request") or {}
             record = self.requests.get(request_id)
@@ -637,6 +640,15 @@ class Page:
                 record["failed"] = clip(params.get("errorText") or "failed", 1024)
                 record["finished"] = params.get("timestamp")
         self.account_request(request_id)
+
+    def track_fetch(self, method: str, request_id: str, params: dict):
+        if method == "Network.requestWillBeSent":
+            if params.get("type") in ("XHR", "Fetch") and request_id not in self.fetches_started:
+                if len(self.fetches_started) >= FETCHES_TRACKED:
+                    self.fetches_started.pop(next(iter(self.fetches_started)))
+                self.fetches_started[request_id] = time.monotonic()
+        elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+            self.fetches_started.pop(request_id, None)
 
     def account_request(self, request_id):
         record = self.requests.get(request_id)
