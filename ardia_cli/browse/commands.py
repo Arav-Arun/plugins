@@ -1975,13 +1975,16 @@ async def read_scoped(page, frame, selector: str) -> tuple[str, str]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + THIN_WAIT
     got = {"matched": 0, "text": ""}
+    in_main = frame == page.main_frame
     while True:
         try:
             got = await page.call(READ_SCOPED, selector, frame=frame, read=True)
         except BrowseError as error:
-            if error.code not in ("document_changed", "page_navigated", "frame_gone") or (error.code == "frame_gone" and frame is not page.main_frame):
+            if error.code not in ("document_changed", "page_navigated", "frame_gone") or (error.code == "frame_gone" and not in_main):
                 raise
             got = {"matched": 0, "text": ""}
+            if in_main:
+                frame = page.main_frame
         if (got.get("matched") and (got.get("text") or "").strip()) or loop.time() + THIN_POLL >= deadline:
             break
         await asyncio.sleep(THIN_POLL)

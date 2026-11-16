@@ -4,6 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ardia_cli.browse.errors import BrowseError, ConnectionLost, Usage
+from ardia_cli.browse.page import FETCH_FRESH
 
 READ_TABS = 4
 READER_TRIES = 2
@@ -19,7 +20,6 @@ SAME_DOCUMENT_WAIT = 3.0
 MIN_USEFUL = 120
 THIN_WAIT = 5.0
 THIN_POLL = 0.5
-FETCH_FRESH = 1.5
 CUT_MARK = 24
 MAX_STDIN = 1024 * 1024
 PAGE_SHARE = 6000
@@ -438,7 +438,8 @@ def fetching(page, earlier: frozenset) -> bool:
     if not page.network_on:
         return False
     now = time.monotonic()
-    return any(request_id not in earlier and now - started < FETCH_FRESH for request_id, started in page.fetches_started.items())
+    return now < page.fetches_busy_until or any(request_id not in earlier and now - started < FETCH_FRESH
+                                                for request_id, started in page.fetches_started.items())
 
 
 async def settle(page, deadline: float, earlier: frozenset = frozenset()):
@@ -500,6 +501,7 @@ async def goto(ctx, page, url: str, timeout: float, keep_partial: bool = False) 
     deadline = loop.time() + timeout
     before = await before_navigating(page, url)
     earlier = frozenset(page.fetches_started)
+    page.fetches_busy_until = 0.0
     try:
         result = await page.send("Page.navigate", {"url": url}, timeout=timeout)
     except Gated:

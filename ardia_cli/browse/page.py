@@ -21,6 +21,7 @@ CONSOLE_LIMIT = 1000
 ERROR_LIMIT = 500
 REQUEST_LIMIT = 1000
 FETCHES_TRACKED = 256
+FETCH_FRESH = 1.5
 RECORD_TEXT_LIMIT = 64 * 1024
 HEADER_VALUE_LIMIT = 8 * 1024
 HEADERS_LIMIT = 64 * 1024
@@ -143,6 +144,7 @@ class Page:
         self.request_sizes: dict = {}
         self.requests_dropped = 0
         self.fetches_started: dict = {}
+        self.fetches_busy_until = 0.0
         self.runtime_on = False
         self.network_on = False
         self.input = Input(self)
@@ -644,9 +646,13 @@ class Page:
     def track_fetch(self, method: str, request_id: str, params: dict):
         if method == "Network.requestWillBeSent":
             if params.get("type") in ("XHR", "Fetch") and request_id not in self.fetches_started:
+                now = time.monotonic()
                 if len(self.fetches_started) >= FETCHES_TRACKED:
-                    self.fetches_started.pop(next(iter(self.fetches_started)))
-                self.fetches_started[request_id] = time.monotonic()
+                    self.fetches_started = {key: started for key, started in self.fetches_started.items() if now - started < FETCH_FRESH}
+                if len(self.fetches_started) >= FETCHES_TRACKED:
+                    oldest = self.fetches_started.pop(next(iter(self.fetches_started)))
+                    self.fetches_busy_until = max(self.fetches_busy_until, oldest + FETCH_FRESH)
+                self.fetches_started[request_id] = now
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
             self.fetches_started.pop(request_id, None)
 
