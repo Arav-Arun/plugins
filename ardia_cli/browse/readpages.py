@@ -489,7 +489,15 @@ async def after_same_document(page, before, deadline: float, earlier: frozenset 
     await settle(page, min(deadline, loop.time() + SETTLE_LIMIT), earlier)
 
 
-async def goto(ctx, page, url: str, timeout: float):
+async def arrived_text(page, loader: str) -> bool:
+    try:
+        length = await page.call("() => (document.body && document.body.innerText || '').trim().length", frame=page.main_frame, read=True)
+    except BrowseError:
+        return False
+    return page.loader(page.main_frame) == loader and bool(length)
+
+
+async def goto(ctx, page, url: str, timeout: float) -> str | None:
     from ardia_cli.browse.commands import wait_for_load
     from ardia_cli.browse.errors import Gated
 
@@ -505,7 +513,16 @@ async def goto(ctx, page, url: str, timeout: float):
         raise BrowseError(f"couldn't load it: {result['errorText']}", code="navigation_failed")
     loader = result.get("loaderId")
     if loader:
-        await wait_for_load(page, loader, max(deadline - loop.time(), 0.1), "domcontentloaded")
+        try:
+            await wait_for_load(page, loader, max(deadline - loop.time(), 0.1), "domcontentloaded")
+        except BrowseError as error:
+            if error.code != "timeout" or not await arrived_text(page, loader):
+                raise
+            from ardia_cli import command_metrics
+
+            command_metrics.flag("read_partial_page", True)
+            await page.refresh_frames()
+            return f"the page was still loading after {timeout:g} s; this is the part that had arrived"
         try:
             await wait_for_load(page, loader, min(LOAD_GRACE, max(deadline - loop.time(), 0.1)), "load")
         except BrowseError:
@@ -580,7 +597,7 @@ async def read_in(ctx, page, url: str, selector: str | None, timeout: float, opt
 
     record = {"url": url, "source": "browser"}
     try:
-        await goto(ctx, page, url, timeout)
+        partial = await goto(ctx, page, url, timeout)
         if await pdftext.page_is_pdf(page):
             record.update(finalUrl=page.url, title=page.url.rsplit("/", 1)[-1], source="pdf",
                           text=readurl.post_process(await pdftext.page_text(page), options))
@@ -599,8 +616,9 @@ async def read_in(ctx, page, url: str, selector: str | None, timeout: float, opt
         record["scope"] = got["scope"]
         command_metrics_flag("read_scope_shown")
     challenge = bot_check(record["title"], record["text"], record.get("status"))
-    if challenge:
-        record["note"] = challenge
+    notes = [note for note in (partial, challenge) if note]
+    if notes:
+        record["note"] = "; ".join(notes)
     if selector and not got.get("matched"):
         record["error"] = f"nothing on the page matches {selector}"
     return record

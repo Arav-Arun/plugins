@@ -1032,6 +1032,31 @@ class BrowseEndToEnd(unittest.TestCase):
             server.server_close()
         self.assertIn("Claims trainee, remote", out)
 
+    def test_read_keeps_what_a_stalled_page_sent(self):
+        class Stalls(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"<!doctype html><html><head><title>Slow listing</title></head><body><h1>Openings</h1>"
+                                 b"<p>Claims trainee, remote</p><p>Sales associate, on site</p>" + b" " * 4096)
+                self.wfile.flush()
+                time.sleep(8)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stalls)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            done = self.browse("read", f"http://127.0.0.1:{server.server_address[1]}/slow", "--timeout", "2500", session="stalled-read")
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertIn("Claims trainee, remote", done.stdout)
+        self.assertIn("the page was still loading after 2.5 s; this is the part that had arrived", done.stdout)
+
     def test_read_runs_beside_a_session_busy_with_a_script(self):
         session = "busy"
         self.browse("open", self.url("picker.html"), session=session)
