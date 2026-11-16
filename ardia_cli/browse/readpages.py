@@ -3,7 +3,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from ardia_cli.browse.errors import BrowseError, ConnectionLost, Usage
+from ardia_cli.browse.errors import BrowseError, ConnectionLost, OutcomeUnknown, Usage
 from ardia_cli.browse.page import FETCH_FRESH
 
 READ_TABS = 4
@@ -541,6 +541,10 @@ async def goto(ctx, page, url: str, timeout: float, keep_partial: bool = False) 
         result = await page.send("Page.navigate", {"url": url}, timeout=timeout)
     except Gated:
         raise BrowseError(f"Ardia's policy only lets the ardia command open web pages; {url} isn't one", code="policy_refused") from None
+    except OutcomeUnknown as error:
+        from ardia_cli.browse.commands import site_silent
+
+        raise site_silent(url, timeout, error) from None
     if result.get("errorText"):
         from ardia_cli.browse.commands import HTTPS_ONLY_NOTE, https_only_block
 
