@@ -195,7 +195,7 @@ class BrowseEndToEnd(unittest.TestCase):
     def test_no_humanize_is_instant(self):
         session = "instant"
         self.browse("open", self.url("probe.html"), "--show", session=session)
-        self.browse("fill", "#field", "abc", session=session)
+        self.browse("type", "#field", "abc", "--no-humanize", session=session)
         self.browse("click", "#target", "--no-humanize", session=session)
         events = self.report(session)["events"]
         down = next(index for index, event in enumerate(events) if event["type"] == "mousedown")
