@@ -48,7 +48,7 @@ class InertStream:
 
 
 def say(text: str) -> None:
-    sys.stdout.write(text + "\n")
+    sys.stdout.write(well_formed(text) + "\n")
     sys.stdout.flush()
 
 
@@ -65,7 +65,7 @@ def quiet_stdout() -> None:
 
 def complain(text: str) -> None:
     sys.stdout.flush()
-    sys.stderr.write(text + "\n")
+    sys.stderr.write(well_formed(text) + "\n")
     sys.stderr.flush()
 
 
