@@ -153,7 +153,6 @@ class FakeBrowser:
         self.state = state
         self.delay = delay
         self.created = []
-        self.windows = []
         self.closed = []
         self.urls = {}
         self.stuck = set()
@@ -165,8 +164,6 @@ class FakeBrowser:
         if method == "Target.createTarget":
             target = f"R{len(self.created) + 1}"
             self.created.append(target)
-            if params.get("newWindow"):
-                self.windows.append(target)
             self.urls[target] = params["url"]
             return {"targetId": target}
         if method == "Target.closeTarget":
@@ -199,9 +196,6 @@ class FakeReader:
 
     async def keep_awake(self):
         pass
-
-    async def takes_input(self):
-        return self.target_id in self.browser.windows if self.state.extras.get("hidden_tabs") else True
 
     async def attach(self, browser):
         if self.target_id in self.state.refuse_attach:
@@ -333,21 +327,6 @@ class ReadingTabs(unittest.TestCase):
     def test_one_url_uses_one_tab(self):
         run(readpages.read_tabs(self.ctx, ["http://s/p/1"], None, 5, {}))
         self.assertEqual(self.state.browser.created, ["R1"])
-
-    def test_a_reader_tab_left_hidden_on_a_plain_browser_moves_to_its_own_window(self):
-        self.state.endpoint = SimpleNamespace(explicit=True)
-        self.state.extras["hidden_tabs"] = True
-        run(readpages.read_tabs(self.ctx, ["http://s/p/1"], None, 5, {}))
-        self.assertEqual(self.state.browser.created, ["R1", "R2"])
-        self.assertEqual(self.state.browser.windows, ["R2"])
-        self.assertIn("R1", self.state.browser.closed)
-        run(readpages.read_tabs(self.ctx, ["http://s/p/2"], None, 5, {}))
-        self.assertEqual(self.state.browser.windows, ["R2", "R3"])
-
-    def test_ardias_own_path_keeps_reader_tabs_in_the_window(self):
-        self.state.extras["hidden_tabs"] = True
-        run(readpages.read_tabs(self.ctx, ["http://s/p/1"], None, 5, {}))
-        self.assertEqual(self.state.browser.windows, [])
 
     def test_a_failed_page_makes_the_command_fail_but_keeps_the_others(self):
         records = run(readpages.read_tabs(self.ctx, ["http://s/p/1", "http://s/boom"], None, 5, {}))
