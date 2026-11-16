@@ -178,7 +178,22 @@ def failed_navigation(ctx: Ctx, url: str, error_text: str) -> BrowseError:
                     "if nothing does, say what couldn't be reached")
     elif "ERR_NAME_NOT_RESOLVED" in error_text:
         message += f". {host} has no address: check the spelling, or search for the site's current address"
+    elif https_only_block(url, error_text):
+        message += f". {HTTPS_ONLY_NOTE}"
     return BrowseError(message, code="navigation_failed")
+
+
+HTTPS_ONLY_NOTE = ("Ardia loads http:// addresses over https and blocks the page when the site has no working https, which is what this "
+                   "error usually means for an http:// address. Try the https:// address; if that fails too, say the site couldn't be reached")
+
+
+def https_only_block(url: str, error_text: str) -> bool:
+    from ardia_cli import command_metrics
+
+    blocked = "ERR_BLOCKED_BY_CLIENT" in error_text and url.lower().startswith("http://")
+    if blocked:
+        command_metrics.flag("navigation_https_only_hint", True)
+    return blocked
 
 
 async def navigate(ctx: Ctx, page, url: str, until: str = "load"):

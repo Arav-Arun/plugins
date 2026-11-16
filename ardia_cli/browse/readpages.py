@@ -517,7 +517,10 @@ async def goto(ctx, page, url: str, timeout: float, keep_partial: bool = False) 
     except Gated:
         raise BrowseError(f"Ardia's policy only lets the ardia command open web pages; {url} isn't one", code="policy_refused") from None
     if result.get("errorText"):
-        raise BrowseError(f"couldn't load it: {result['errorText']}", code="navigation_failed")
+        from ardia_cli.browse.commands import HTTPS_ONLY_NOTE, https_only_block
+
+        note = f". {HTTPS_ONLY_NOTE}" if https_only_block(url, result["errorText"]) else ""
+        raise BrowseError(f"couldn't load it: {result['errorText']}{note}", code="navigation_failed")
     loader = result.get("loaderId")
     if loader:
         try:
