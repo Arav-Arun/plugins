@@ -344,11 +344,16 @@ VIRTUALIZED_MARK = "rows rendered; the grid is virtualized"
 EMPTY_PAGE = ("(no text: the site sent an empty page with no title, which usually means it turns away automated or foreign "
               "traffic; reading it again rarely helps)")
 
+FRAME_MARK = '[frame "'
+
+
 def note_virtualized(*texts: str) -> None:
     from ardia_cli import command_metrics
 
     if any(VIRTUALIZED_MARK in (text or "") for text in texts):
         command_metrics.flag("read_virtualized_grid", True)
+    if any(FRAME_MARK in (text or "") for text in texts):
+        command_metrics.flag("read_frame_text", True)
 
 
 def pages_cap(pages: int) -> int:

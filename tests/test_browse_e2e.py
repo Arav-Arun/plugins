@@ -1074,6 +1074,17 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn("Kombucha starter kit", out)
         self.assertNotIn("page says", out)
 
+    def test_read_takes_in_the_text_of_a_same_origin_frame(self):
+        session = "frame-jobs"
+        page = self.url("framejobs.html")
+        for out in (self.browse("read", page, session=session).stdout,
+                    self.browse("open", page, session=session).stdout and self.browse("read", session=session).stdout,
+                    self.browse("read", "-s", "#board", session=session).stdout):
+            self.assertIn('[frame "Job board"]', out)
+            self.assertIn("Field Service Technician | Oklahoma City", out)
+            self.assertNotIn("Tiny tracker", out)
+        self.assertIn('[frame "Partner board" from another site, not read here: read http://localhost:', self.browse("read", session=session).stdout)
+
     def test_text_with_half_an_emoji_still_reads(self):
         session = "surrogate"
         out = self.browse("read", self.url("surrogate.html"), session=session).stdout
