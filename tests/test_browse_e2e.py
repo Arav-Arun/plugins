@@ -993,6 +993,17 @@ class BrowseEndToEnd(unittest.TestCase):
         out = self.browse("read", self.url("late.html"), session="late-read").stdout
         self.assertIn("Result card 12", out)
 
+    def test_read_scope_waits_for_late_content_and_says_when_it_stays_empty(self):
+        session = "late-scope"
+        self.browse("open", self.url("latescope.html"), "--show", session=session)
+        self.assertIn("Claims trainee, remote", self.browse("read", "-s", "main", session=session).stdout)
+        blank = self.browse("read", "-s", "#blank", session=session)
+        self.assertEqual(blank.returncode, 0)
+        self.assertIn("#blank matched 1 element with no text", blank.stdout)
+        missing = self.browse("read", "-s", "#nowhere", session=session, check=False)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("Nothing on the page matches #nowhere", missing.stderr)
+
     def test_read_runs_beside_a_session_busy_with_a_script(self):
         session = "busy"
         self.browse("open", self.url("picker.html"), session=session)

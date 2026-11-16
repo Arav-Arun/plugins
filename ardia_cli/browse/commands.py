@@ -1946,15 +1946,15 @@ async def cmd_read(ctx: Ctx, argv):
         content = readurl.post_process(await pdftext.page_text(page), options)
         return Result({"content": content, "contentType": "application/pdf", "finalUrl": page.url, "source": "pdf", "truncated": False, "url": page.url},
                       content, page_content=True)
+    empty_note = ""
     if selector:
-        content = await page.call("(s) => ardiaBrowse.queryAll(s).map((el) => ardiaBrowse.readable(el)).filter(Boolean).join('\\n\\n')",
-                                  selector, frame=frame, read=True)
+        content, empty_note = await read_scoped(page, frame, selector)
     else:
         content = await page.call("() => ardiaBrowse.readable()", frame=frame, read=True)
     content = readurl.post_process(content, options)
     readpages.note_virtualized(content)
     scope = "" if options.get("selector") else await page_scope(page, frame)
-    shown = f"{content}\n[scope: {scope}]" if scope else content
+    shown = f"{content}\n[scope: {scope}]" if scope else (content or empty_note)
     return Result({"content": content, "contentType": "text/html", "finalUrl": page.url, "source": "active-tab-html", "truncated": False, "url": page.url,
                    "scope": scope or None}, shown, page_content=True)
 
@@ -1963,6 +1963,38 @@ def render_json(value) -> str:
     from ardia_cli.browse.script import render_json as render
 
     return render(value)
+
+
+READ_SCOPED = "(s) => { const found = ardiaBrowse.queryAll(s); return {matched: found.length, text: found.map((el) => ardiaBrowse.readable(el)).filter(Boolean).join('\\n\\n')}; }"
+
+
+async def read_scoped(page, frame, selector: str) -> tuple[str, str]:
+    from ardia_cli import command_metrics
+    from ardia_cli.browse.readpages import THIN_POLL, THIN_WAIT
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + THIN_WAIT
+    got = {"matched": 0, "text": ""}
+    while True:
+        try:
+            got = await page.call(READ_SCOPED, selector, frame=frame, read=True)
+        except BrowseError as error:
+            if error.code not in ("document_changed", "page_navigated", "frame_gone"):
+                raise
+        if (got.get("matched") and (got.get("text") or "").strip()) or loop.time() + THIN_POLL >= deadline:
+            break
+        await asyncio.sleep(THIN_POLL)
+    matched = got.get("matched") or 0
+    if not matched:
+        raise BrowseError(f"Nothing on the page matches {selector} (waited {THIN_WAIT:g} s for it). Read without -s, or check it with snapshot -i",
+                          code="not_found")
+    text = got.get("text") or ""
+    if text.strip():
+        return text, ""
+    command_metrics.flag("read_scope_empty", True)
+    what = "1 element" if matched == 1 else f"{matched} elements"
+    return text, (f"({selector} matched {what} with no text after {THIN_WAIT:g} s: the page may still be loading into it, or its content "
+                  "is elsewhere. Read without -s, or snapshot -i to see what's there)")
 
 
 async def page_scope(page, frame) -> str:
