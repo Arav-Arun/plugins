@@ -18,6 +18,7 @@ SAME_DOCUMENT_WAIT = 3.0
 MIN_USEFUL = 120
 THIN_WAIT = 5.0
 THIN_POLL = 0.5
+FETCH_FRESH = 1.5
 CUT_MARK = 24
 MAX_STDIN = 1024 * 1024
 PAGE_SHARE = 6000
@@ -419,6 +420,7 @@ async def open_reader(state, opened: list[str]):
     state.target_infos.setdefault(target_id, {"targetId": target_id, "url": "about:blank", "title": "", "type": "page"})
     page = state.pages[target_id] = Page(state, target_id)
     await page.attach(state.browser)
+    await page.enable_network()
     return page
 
 
@@ -431,13 +433,31 @@ async def probe(page):
         return None, None, True
 
 
-async def settle(page, deadline: float):
+def fetching(page, seen: dict, earlier: frozenset, now: float) -> bool:
+    if not page.network_on:
+        return False
+    pending = False
+    for request_id, record in page.requests.items():
+        if request_id in earlier or record.get("finished") is not None or record.get("resourceType") not in ("XHR", "Fetch"):
+            continue
+        first = seen.setdefault(request_id, now)
+        pending = pending or now - first < FETCH_FRESH
+    return pending
+
+
+async def settle(page, deadline: float, earlier: frozenset = frozenset()):
+    from ardia_cli import command_metrics
+
     loop = asyncio.get_running_loop()
     last = None
     since = loop.time()
+    seen: dict = {}
     while loop.time() < deadline:
         ready, fingerprint, busy = await probe(page)
         now = loop.time()
+        if not busy and fetching(page, seen, earlier, now):
+            busy = True
+            command_metrics.flag("read_waited_for_requests", True)
         if (ready, fingerprint, busy) != last:
             last, since = (ready, fingerprint, busy), now
         elif ready == "complete" and not busy and now - since >= SETTLE_QUIET:
@@ -463,10 +483,10 @@ async def before_navigating(page, url: str):
     return (await probe(page))[1] if same_document(page, url) else None
 
 
-async def after_same_document(page, before, deadline: float):
+async def after_same_document(page, before, deadline: float, earlier: frozenset = frozenset()):
     loop = asyncio.get_running_loop()
     await route_changed(page, before, min(deadline, loop.time() + SAME_DOCUMENT_WAIT))
-    await settle(page, min(deadline, loop.time() + SETTLE_LIMIT))
+    await settle(page, min(deadline, loop.time() + SETTLE_LIMIT), earlier)
 
 
 async def goto(ctx, page, url: str, timeout: float):
@@ -476,6 +496,7 @@ async def goto(ctx, page, url: str, timeout: float):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     before = await before_navigating(page, url)
+    earlier = frozenset(page.requests)
     try:
         result = await page.send("Page.navigate", {"url": url}, timeout=timeout)
     except Gated:
@@ -489,9 +510,9 @@ async def goto(ctx, page, url: str, timeout: float):
             await wait_for_load(page, loader, min(LOAD_GRACE, max(deadline - loop.time(), 0.1)), "load")
         except BrowseError:
             pass
-        await settle(page, min(deadline, loop.time() + SETTLE_LIMIT))
+        await settle(page, min(deadline, loop.time() + SETTLE_LIMIT), earlier)
     else:
-        await after_same_document(page, before, deadline)
+        await after_same_document(page, before, deadline, earlier)
     await page.refresh_frames()
 
 

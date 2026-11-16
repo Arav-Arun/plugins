@@ -1,4 +1,5 @@
 from datetime import datetime
+import http.server
 import json
 import re
 import os
@@ -7,8 +8,10 @@ import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import unittest
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -1003,6 +1006,31 @@ class BrowseEndToEnd(unittest.TestCase):
         missing = self.browse("read", "-s", "#nowhere", session=session, check=False)
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("Nothing on the page matches #nowhere", missing.stderr)
+
+    def test_read_waits_for_results_a_page_is_still_fetching(self):
+        class SlowJobs(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                time.sleep(1.2)
+                body = json.dumps(["Claims trainee, remote", "Sales associate, on site"]).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SlowJobs)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            api = f"http://127.0.0.1:{server.server_address[1]}/jobs"
+            out = self.browse("read", self.url("searchfetch.html") + "?api=" + urllib.parse.quote(api, safe=""), session="fetch-read").stdout
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertIn("Claims trainee, remote", out)
 
     def test_read_runs_beside_a_session_busy_with_a_script(self):
         session = "busy"
