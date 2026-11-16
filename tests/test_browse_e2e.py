@@ -1069,6 +1069,11 @@ class BrowseEndToEnd(unittest.TestCase):
         after = json.loads(self.browse("eval", probe, session=session).stdout)[1]
         self.assertNotEqual(before, after)
 
+    def test_read_scope_ignores_a_number_and_a_word_on_separate_lines(self):
+        out = self.browse("read", self.url("scopebadge.html"), session="scope-badge").stdout
+        self.assertIn("Kombucha starter kit", out)
+        self.assertNotIn("page says", out)
+
     def test_read_runs_beside_a_session_busy_with_a_script(self):
         session = "busy"
         self.browse("open", self.url("picker.html"), session=session)
