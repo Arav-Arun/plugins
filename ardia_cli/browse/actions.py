@@ -493,9 +493,9 @@ async def dismissed_consent(page, element, x, y) -> bool:
         return False
     if not done:
         return False
-    popup = done.get("kind") == "popup"
-    command_metrics.flag("popup_dismissed" if popup else "consent_dismissed", True)
-    what = "A signup popup" if popup else "A consent banner"
+    kind = done.get("kind")
+    command_metrics.flag({"popup": "popup_dismissed", "modal": "modal_dismissed"}.get(kind, "consent_dismissed"), True)
+    what = {"popup": "A signup popup", "modal": "A popup"}.get(kind, "A consent banner")
     page.state.consent_dismissed = f'{what} was in the way: {done["layer"]} covered {element.label}, so its "{done["name"]}" button was clicked ({done["choice"]})'
     await asyncio.sleep(CONSENT_SETTLE)
     return True

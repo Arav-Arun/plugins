@@ -1128,6 +1128,13 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn("Escape was pressed", out)
         self.assertEqual(self.report(session), {"clicked": ["save"], "closed": True})
 
+    def test_a_click_closes_a_site_popup_in_its_way_through_its_close_button(self):
+        session = "site-popup"
+        self.browse("open", self.url("sitepopup.html"), "--show", session=session)
+        out = self.browse("click", "#next", session=session).stdout
+        self.assertIn("A popup was in the way", out)
+        self.assertEqual(self.report(session), {"clicked": ["next"], "closed": True})
+
     def test_text_with_half_an_emoji_still_reads(self):
         session = "surrogate"
         out = self.browse("read", self.url("surrogate.html"), session=session).stdout

@@ -329,6 +329,23 @@ LIBRARY = r"""
             }
           }
         }
+        const modalName = /(^|[\s_-])(modal|overlay|popup|pop-?layer|lightbox|interstitial)([\s_-]|$)|bx-group|wisepops|wiz-/i;
+        const closeLabel = /^(close|dismiss|close (dialog|modal|popup|window)|×|✕|✖|x)$/i;
+        const modals = backdrop ? [...roots, ...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open]")] : roots;
+        for (const root of modals) {
+          if (!api.visible(root)) continue;
+          const named = root.id + " " + (typeof root.className === "string" ? root.className : "");
+          if (!modalName.test(named)) continue;
+          for (const button of root.querySelectorAll("button, [role=button], a, [aria-label]")) {
+            if (!api.visible(button)) continue;
+            const shown = ((button.innerText || button.value || "").trim()).replace(/\s+/g, " ");
+            const label = (button.getAttribute("aria-label") || button.getAttribute("title") || "").trim();
+            if (closeLabel.test(shown) || (shown.length <= 2 && closeLabel.test(label))) {
+              button.click();
+              return { name: shown || label || "close", choice: "close", kind: "modal", layer: api.describe(root) };
+            }
+          }
+        }
         return null;
       }
       best.button.click();
