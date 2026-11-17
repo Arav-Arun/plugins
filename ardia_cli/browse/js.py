@@ -408,14 +408,18 @@ LIBRARY = r"""
       let row = null;
       let frameDepth = 0;
       const flush = () => { const t = norm(buffer); if (t) lines.push(t); buffer = ""; };
+      const NOT_CONTENT = /(^|[^a-z])(ads?|advert\w*|sponsored|doubleclick|googlesyndication|adservice|recaptcha|captcha)([^a-z]|$)|3rd party ad/i;
       const frameText = (el) => {
         const box = el.getBoundingClientRect();
         if (box.width < 120 || box.height < 80) return;
         const title = norm(el.getAttribute("title") || el.getAttribute("name") || "") || "frame";
+        const src = el.getAttribute("src") || "";
+        if (NOT_CONTENT.test(`${title} ${el.id || ""} ${typeof el.className === "string" ? el.className : ""} ${src}`)) return;
         let doc = null;
         try { doc = el.contentDocument; } catch (error) { doc = null; }
         const body = doc && (doc.body || doc.documentElement);
         if (body && frameDepth < 3) {
+          if (!norm(body.innerText || "")) return;
           flush();
           lines.push("");
           lines.push(`[frame "${title}"]`);
@@ -426,10 +430,9 @@ LIBRARY = r"""
           lines.push("");
           return;
         }
-        const src = el.src || "";
-        if (!doc && /^https?:/.test(src) && box.width >= 400 && box.height >= 300) {
+        if (!doc && /^https?:/.test(el.src || "") && box.width >= Math.max(400, innerWidth / 2) && box.height >= 400) {
           flush();
-          lines.push(`[frame "${title}" from another site, not read here: read ${src}]`);
+          lines.push(`[frame "${title}" from another site, not read here: read ${el.src}]`);
         }
       };
       const walk = (node) => {

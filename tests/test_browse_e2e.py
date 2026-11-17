@@ -1083,6 +1083,8 @@ class BrowseEndToEnd(unittest.TestCase):
             self.assertIn('[frame "Job board"]', out)
             self.assertIn("Field Service Technician | Oklahoma City", out)
             self.assertNotIn("Tiny tracker", out)
+            self.assertNotIn("Buy the Pro plan", out)
+            self.assertNotIn("Empty widget", out)
         self.assertIn('[frame "Partner board" from another site, not read here: read http://localhost:', self.browse("read", session=session).stdout)
 
     def test_a_read_of_the_tab_says_when_it_read_it(self):
