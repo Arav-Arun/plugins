@@ -214,6 +214,21 @@ def ardiacloud_overrides(plan, contender, lane, port_offset=0):
     return dict(o, lane=f"lane{lane.index}", port_offset=port_offset)
 
 
+def scratch_roots():
+    return [ardia_side.WORK, opencode_side.ROOT / "lanes", browserharness_side.ROOT / "lanes",
+            browseragent_side.ROOT / "lanes", registry.HOME]
+
+
+def clean_run_scratch(rec):
+    instance = rec.get("instance") if isinstance(rec.get("instance"), dict) else {}
+    for raw in (rec.get("workdir"), instance.get("home")):
+        if not raw:
+            continue
+        path = Path(raw).resolve()
+        if any(root.resolve() in path.parents for root in scratch_roots()):
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def run_item(item, lane, results_dir, plan, on_start):
     c, offset = item["contender"], item.get("port_offset", 0)
     if c["kind"] == "aside":
@@ -312,6 +327,8 @@ class Executor:
                    "side": item["contender"]["kind"], "pass": False, "method": None, "invariants": None,
                    "harness_error": f"{type(e).__name__}: {e}"}
         on_start()
+        if self.plan.get("clean_run_scratch"):
+            clean_run_scratch(rec)
         reason = rate_limit_reason(rec)
         if reason:
             rec["harness_error"] = f"rate_limited: {reason}"

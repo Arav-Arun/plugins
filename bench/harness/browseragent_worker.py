@@ -44,14 +44,23 @@ async def main():
     prompt_file, cdp_url, model_name, effort, timeout, max_steps, out_dir = sys.argv[1:8]
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    from pydantic_ai.models.openai import OpenAIResponsesModel
-    from pydantic_ai.providers.openai import OpenAIProvider
-
     import browser_use
     from browser_use import Agent, Browser
+    from browser_use.agent.loop import reasoning_supported
 
-    llm = OpenAIResponsesModel(model_name, provider=OpenAIProvider(api_key=os.environ["OPENAI_API_KEY"],
-                                                                   base_url=os.environ["OPENAI_BASE_URL"]))
+    if model_name.startswith("claude"):
+        from pydantic_ai.models.anthropic import AnthropicModel
+        from pydantic_ai.providers.anthropic import AnthropicProvider
+
+        llm = AnthropicModel(model_name, provider=AnthropicProvider(
+            api_key=os.environ["OPENAI_API_KEY"], base_url=os.environ["OPENAI_BASE_URL"].removesuffix("/v1")),
+            settings={"anthropic_cache_messages": False})
+    else:
+        from pydantic_ai.models.openai import OpenAIResponsesModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        llm = OpenAIResponsesModel(model_name, provider=OpenAIProvider(api_key=os.environ["OPENAI_API_KEY"],
+                                                                       base_url=os.environ["OPENAI_BASE_URL"]))
     browser = Browser(cdp_url=cdp_url)
     agent = Agent(Path(prompt_file).read_text(), llm, browser=browser, reasoning=effort, workspace=out / "workspace",
                   judge=False)
@@ -83,6 +92,8 @@ async def main():
         "tool_calls": sum(1 for s in steps if s["kind"] == "tool"),
         "duration_s": round(time.monotonic() - started, 3),
         "browser_use": getattr(browser_use, "__version__", None),
+        "llm_class": type(llm).__name__,
+        "reasoning_applied": reasoning_supported(llm),
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
 

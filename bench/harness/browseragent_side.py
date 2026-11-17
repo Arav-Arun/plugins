@@ -143,6 +143,7 @@ def run(task_id, agent, run_id, results_dir, overrides=None, contender=None, on_
     finally:
         stopped = stop_lane(opts)
     metrics = read_json(out_dir / "metrics.json") or {}
+    shutil.rmtree(out_dir / "workspace", ignore_errors=True)
     passed, reset_by_agent = grading.grade(check, timed_out, baseline_reset_at_ms=baseline.get("reset_at_ms"))
     completed = check.get("completed_at_ms")
     usage = metrics.get("usage") or {}
@@ -168,7 +169,8 @@ def run(task_id, agent, run_id, results_dir, overrides=None, contender=None, on_
         "prompt": task["prompt"], "command": cmd[:3] + cmd[4:],
         "instance": {"browser": {k: browser.get(k) for k in ("kind", "pid", "browser", "user_agent", "app",
                                                              "cdp_port", "launch_s")},
-                     "setup_s": setup_s, "home": str(home), "tab": tab, "browser_use": metrics.get("browser_use")},
+                     "setup_s": setup_s, "home": str(home), "tab": tab, "browser_use": metrics.get("browser_use"),
+                     "llm_class": metrics.get("llm_class"), "reasoning_applied": metrics.get("reasoning_applied")},
         "focus": {"front_pid_before": front_before, "front_pid_after": front_after,
                   "ours_in_front": browser["pid"] in (front_before, front_after), "front_samples": front.samples},
         "frontmost_during_run": front.ours,
