@@ -309,13 +309,15 @@ LIBRARY = r"""
         if (best && best.rank === 0) break;
       }
       if (!best) {
-        const signup = /\b(newsletter|subscribe|sign ?up|join|discount|coupon|offer|deal|email)\b|\d+ ?% ?off\b/i;
+        const signup = /\b(newsletter|subscribe|sign ?up|join|discount|coupon|offer|deal|email|survey|feedback|questionnaire)\b|\d+ ?% ?off\b|\b(tell us|rate your|share your) /i;
+        const surveyVendor = /kampyle|medallia|qualtrics|qsi_|hotjar|foresee|usabilla|survicate|invite/i;
         const dismiss = /^(close|dismiss|no,? thanks?|no thank you|not now|maybe later|skip|×|✕|✖)$/i;
         const popups = backdrop ? [...roots, ...document.querySelectorAll("[role=dialog], [aria-modal=true], dialog[open]")] : roots;
         for (const root of popups) {
           if (!api.visible(root)) continue;
           const text = (root.innerText || "").slice(0, 3001);
-          if (text.length > 3000 || !(root.querySelector("input[type=email]") || signup.test(text))) continue;
+          const named = root.id + " " + (typeof root.className === "string" ? root.className : "");
+          if (text.length > 3000 || !(root.querySelector("input[type=email]") || signup.test(text) || surveyVendor.test(named))) continue;
           for (const button of root.querySelectorAll("button, [role=button], a, input[type=button]")) {
             if (!api.visible(button)) continue;
             const shown = ((button.innerText || button.value || "").trim()).replace(/\s+/g, " ");

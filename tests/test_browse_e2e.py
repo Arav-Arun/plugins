@@ -1101,6 +1101,33 @@ class BrowseEndToEnd(unittest.TestCase):
         self.assertIn("Maker 500", out)
         self.assertIn("[500 rows; scrolled to the end of the list]", out)
 
+    def test_a_page_stuck_in_its_own_scripts_fails_fast_after_the_first_wait(self):
+        import time
+
+        session = "busy-page"
+        self.browse("open", self.url("busypage.html"), session=session)
+        time.sleep(2.5)
+        first = self.browse("snapshot", session=session, check=False)
+        self.assertIn("isn't answering", first.stdout + first.stderr)
+        started = time.monotonic()
+        second = self.browse("read", session=session, check=False)
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("isn't answering", second.stdout + second.stderr)
+
+    def test_a_click_declines_a_survey_invite_in_its_way(self):
+        session = "survey"
+        self.browse("open", self.url("surveyinvite.html"), "--show", session=session)
+        out = self.browse("click", "#go", session=session).stdout
+        self.assertIn("No thanks", out)
+        self.assertEqual(self.report(session), {"clicked": ["go"], "survey": "declined"})
+
+    def test_a_click_closes_an_open_menu_in_its_way(self):
+        session = "open-menu"
+        self.browse("open", self.url("openmenu.html"), "--show", session=session)
+        out = self.browse("click", "#save", session=session).stdout
+        self.assertIn("Escape was pressed", out)
+        self.assertEqual(self.report(session), {"clicked": ["save"], "closed": True})
+
     def test_text_with_half_an_emoji_still_reads(self):
         session = "surrogate"
         out = self.browse("read", self.url("surrogate.html"), session=session).stdout
