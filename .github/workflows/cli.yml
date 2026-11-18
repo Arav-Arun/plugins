@@ -1,0 +1,95 @@
+name: Command Line plugin
+
+on:
+  pull_request:
+    paths: ["plugins/cli/**", ".github/workflows/cli.yml"]
+  push:
+    branches: [main]
+    paths: ["plugins/cli/**", ".github/workflows/cli.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    name: Rust ardia on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    defaults:
+      run:
+        working-directory: plugins/cli/rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rust
+        run: |
+          command -v rustup >/dev/null || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - name: Size
+        run: |
+          echo "ardia binary: $(wc -c < target/release/ardia) bytes" >> "$GITHUB_STEP_SUMMARY"
+      - name: uv
+        run: curl -LsSf https://astral.sh/uv/0.12.15/install.sh | sh
+      - name: Parity with the Python CLI
+        working-directory: plugins/cli
+        env:
+          ARDIA_RUST_CLI: ${{ github.workspace }}/plugins/cli/rust/target/release/ardia
+        run: |
+          ~/.local/bin/uv venv --python 3.13 "$RUNNER_TEMP/venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/venv" ~/.local/bin/uv pip install --quiet --require-hashes --no-build -r requirements.lock
+          "$RUNNER_TEMP/venv/bin/python" -m unittest -v tests.test_rust_parity
+
+  python:
+    name: Python tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    defaults:
+      run:
+        working-directory: plugins/cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: uv
+        run: curl -LsSf https://astral.sh/uv/0.12.15/install.sh | sh
+      - name: Locked dependencies
+        run: |
+          ~/.local/bin/uv venv --python 3.13 "$RUNNER_TEMP/venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/venv" ~/.local/bin/uv pip install --quiet --require-hashes --no-build -r requirements.lock
+      - run: '"$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests'
+      - name: plugin.json passes ardia plugins check
+        env:
+          ARDIA_DATA_DIR: ${{ runner.temp }}/data
+          ARDIA_TELEMETRY: "off"
+        run: '"$RUNNER_TEMP/venv/bin/python" -m ardia_cli plugins check "$PWD"'
+      - name: The vendored plugin schema is ardia's
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          url=https://raw.githubusercontent.com/ardia-browser/ardia/main/docs/plugin.schema.json
+          if ! curl -fsSL "$url" -o "$RUNNER_TEMP/ardia-plugin.schema.json"; then
+            echo "::warning::ardia main doesn't publish docs/plugin.schema.json yet: the vendored schema wasn't compared"
+            exit 0
+          fi
+          diff -u "$RUNNER_TEMP/ardia-plugin.schema.json" ardia_cli/schemas/plugin.schema.json \
+            || { echo "::error::ardia_cli/schemas/plugin.schema.json isn't ardia main's docs/plugin.schema.json: copy it over"; exit 1; }
