@@ -16,7 +16,9 @@ import urllib.request
 from pathlib import Path
 
 CLI = Path(__file__).resolve().parents[1]
-REPO = CLI.parents[1]
+from ardia_repo import ARDIA_REPO
+
+REPO = ARDIA_REPO or CLI.parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "browse"
 APP = os.environ.get("ARDIA_BROWSE_E2E_APP")
 JS_LOCATION = os.environ.get("ARDIA_BROWSE_E2E_JS")

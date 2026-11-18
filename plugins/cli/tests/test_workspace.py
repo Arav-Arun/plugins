@@ -180,7 +180,11 @@ class Workspace(Base):
         self.assertEqual(self.sent(server), [])
 
     def test_colors_are_the_ones_the_sidebar_draws(self):
-        core = (Path(__file__).resolve().parents[3] / "packages/core/src/tabGroups.ts").read_text()
+        from ardia_repo import ARDIA_REPO
+
+        if ARDIA_REPO is None:
+            self.skipTest("needs an ardia checkout (ARDIA_REPO, or this repo mounted as its plugins submodule)")
+        core = (ARDIA_REPO / "packages/core/src/tabGroups.ts").read_text()
         tints = tuple(re.findall(r'"(\w+)"', re.search(r"TAB_GROUP_COLORS = \[([^\]]*)\]", core).group(1)))
         self.assertEqual(workspace_cli.TINTS, tints)
         self.assertEqual(workspace_cli.COLORS, ("neutral", "none", *tints))

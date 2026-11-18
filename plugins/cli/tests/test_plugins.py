@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ardia_cli import cli, control, plugins_cli
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-EXAMPLE = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "plugins" / "example"
+EXAMPLE = Path(__file__).resolve().parent / "fixtures" / "plugins" / "example"
 LEGACY = {
     "name": "compact-command-bar",
     "title": "Compact command bar",

@@ -20,7 +20,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ardia_cli import caller, cli, endpoint, feedback, telemetry, telemetry_scrub, usage
 from test_telemetry import CLEARED, INSTALL_ID, Stub, attributes, scratch_dir, write_consent
 
-REPO = Path(__file__).resolve().parents[3]
+from ardia_repo import ARDIA_REPO, CLI
+
+REPO = ARDIA_REPO
 APP_SESSION = "01960a4e-7c1d-7b2a-9f00-1234567890ab"
 UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
@@ -569,6 +571,8 @@ class TelemetrySessionAndKeyTest(unittest.TestCase):
         self.assertTrue(sent["$session_id"])
 
     def test_the_cli_key_matches_the_shared_constants(self):
+        if REPO is None:
+            self.skipTest("needs an ardia checkout (ARDIA_REPO, or this repo mounted as its plugins submodule)")
         source = REPO / "packages" / "core" / "src" / "ingestKeys.ts"
         if not source.exists():
             self.skipTest("packages/core/src/ingestKeys.ts isn't there yet")
@@ -635,7 +639,7 @@ class TelemetrySessionAndKeyTest(unittest.TestCase):
         self.assertFalse(telemetry.keep_local_copy(self.root, [record], False))
 
 
-@unittest.skipUnless(shutil.which("node") and (REPO / "infra" / "feedback" / "server.mjs").exists(), "needs node and infra/feedback")
+@unittest.skipUnless(shutil.which("node") and REPO is not None and (REPO / "infra" / "feedback" / "server.mjs").exists(), "needs node and an ardia checkout with infra/feedback")
 class LocalServiceEndToEndTest(unittest.TestCase):
     def setUp(self):
         self.temp = scratch_dir()
@@ -668,7 +672,7 @@ class LocalServiceEndToEndTest(unittest.TestCase):
         env.update({"ARDIA_CLI_HOME": str(self.home), feedback.TEST_URL_ENV: self.url})
         return subprocess.run(
             [sys.executable, "-m", "ardia_cli", "feedback", "--data-dir", str(self.data), *argv],
-            cwd=REPO / "apps" / "cli", env=env, capture_output=True, text=True, timeout=60,
+            cwd=CLI, env=env, capture_output=True, text=True, timeout=60,
         )
 
     def test_a_report_with_a_file_lands_in_the_service(self):

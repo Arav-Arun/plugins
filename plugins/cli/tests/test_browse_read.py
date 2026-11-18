@@ -15,7 +15,6 @@ from ardia_cli.browse import commands, daemon, readpages
 from ardia_cli.browse.errors import Usage
 
 CLI = Path(__file__).resolve().parents[1]
-REPO = CLI.parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "browse"
 CHROME = os.environ.get("ARDIA_BROWSE_CHROME")
 
