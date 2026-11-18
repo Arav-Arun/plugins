@@ -530,6 +530,15 @@ def bin_dir(env=None) -> Path:
     return Path(env.get("ARDIA_CLI_BIN_DIR") or Path.home() / ".local" / "bin").expanduser()
 
 
+def managed_by_ardia(current: Path) -> bool:
+    target = Path(os.readlink(current)) if current.is_symlink() else None
+    if target is None or not target.is_absolute() or target.parts[-3:] != ("Programs", "cli", "current"):
+        return False
+    store = target.parent
+    version = store / os.readlink(target) if target.is_symlink() else None
+    return version is not None and version.parent == store and (version / "bin" / "ardia").is_file()
+
+
 def trusted_launcher(env=None) -> Path | None:
     from ardia_cli import usage
 
@@ -537,6 +546,8 @@ def trusted_launcher(env=None) -> Path | None:
     current = cli_home / "current" / "bin" / "ardia"
     try:
         if current.is_file() and current.resolve(strict=True).is_relative_to(cli_home.resolve(strict=True)):
+            return current
+        if current.is_file() and managed_by_ardia(cli_home / "current"):
             return current
     except OSError:
         pass
@@ -552,7 +563,7 @@ def ardia_command(env=None) -> str:
     if launcher is None:
         raise Refused(
             "can't find the installed ardia launcher ($ARDIA_CLI_HOME/current/bin/ardia), and won't take whatever "
-            "ardia is first on PATH; install the ardia command from Ardia (Settings › Advanced) and run this again"
+            "ardia is first on PATH; Ardia puts the ardia command on your PATH, so open Ardia and run this again"
         )
     return str(launcher)
 
