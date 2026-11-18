@@ -601,27 +601,38 @@ class Launcher(Sandbox):
         with mock.patch.object(sys, "executable", "/usr/bin/python3"), self.assertRaises(computer.Refused):
             computer.link_command()
 
-    def test_a_current_ardia_adopted_into_its_program_store_is_trusted_and_nothing_else_there(self):
-        store = self.root / "Programs" / "cli"
-        (store / "0.3.0-abc" / "bin").mkdir(parents=True)
-        (store / "0.3.0-abc" / "bin" / "ardia").write_text("#!/bin/sh\n")
+    def store_install(self, store):
+        version = store / "0.3.0-abc"
+        (version / "python" / "bin").mkdir(parents=True)
+        (version / "python" / "bin" / "python3").write_text("")
+        (version / "bin").mkdir()
+        (version / "bin" / "ardia").write_text("#!/bin/sh\n")
         (store / "current").symlink_to("0.3.0-abc")
+        return version / "python" / "bin" / "python3"
+
+    def test_a_fresh_install_from_ardias_store_gets_the_stable_current_path_never_the_version(self):
+        store = self.root / "Programs" / "cli"
+        python = self.store_install(store)
+        with mock.patch.object(sys, "executable", str(python)):
+            self.assertEqual(computer.trusted_launcher(), store / "current" / "bin" / "ardia")
+
+    def test_the_old_home_adopted_by_the_running_store_is_trusted_and_no_other_store(self):
+        store = self.root / "Programs" / "cli"
+        python = self.store_install(store)
         self.cli_home.mkdir()
         (self.cli_home / "current").symlink_to(store / "current")
-        with mock.patch.object(sys, "executable", "/usr/bin/python3"):
+        with mock.patch.object(sys, "executable", str(python)):
             self.assertEqual(computer.trusted_launcher(), self.cli_home / "current" / "bin" / "ardia")
+        other = self.root / "Elsewhere" / "Programs" / "cli"
+        self.store_install(other)
+        (self.cli_home / "current").unlink()
+        (self.cli_home / "current").symlink_to(other / "current")
+        with mock.patch.object(sys, "executable", str(python)):
+            self.assertEqual(computer.trusted_launcher(), store / "current" / "bin" / "ardia", "a store that isn't the running one is never trusted")
         (self.cli_home / "current").unlink()
         (self.cli_home / "current").symlink_to(store / "0.3.0-abc")
         with mock.patch.object(sys, "executable", "/usr/bin/python3"):
             self.assertIsNone(computer.trusted_launcher(), "a version folder named directly could be swept")
-        (self.cli_home / "current").unlink()
-        other = self.root / "Other" / "cli"
-        (other / "x" / "bin").mkdir(parents=True)
-        (other / "x" / "bin" / "ardia").write_text("#!/bin/sh\n")
-        (other / "current").symlink_to("x")
-        (self.cli_home / "current").symlink_to(other / "current")
-        with mock.patch.object(sys, "executable", "/usr/bin/python3"):
-            self.assertIsNone(computer.trusted_launcher())
 
     def test_the_running_installation_is_trusted_when_current_is_missing(self):
         root = self.root / "ardia-cli-0.0.1"

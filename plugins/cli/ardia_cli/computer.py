@@ -530,13 +530,15 @@ def bin_dir(env=None) -> Path:
     return Path(env.get("ARDIA_CLI_BIN_DIR") or Path.home() / ".local" / "bin").expanduser()
 
 
-def managed_by_ardia(current: Path) -> bool:
-    target = Path(os.readlink(current)) if current.is_symlink() else None
-    if target is None or not target.is_absolute() or target.parts[-3:] != ("Programs", "cli", "current"):
-        return False
-    store = target.parent
-    version = store / os.readlink(target) if target.is_symlink() else None
-    return version is not None and version.parent == store and (version / "bin" / "ardia").is_file()
+def running_root() -> Path:
+    return Path(sys.executable).resolve().parents[2]
+
+
+def managed_current(root: Path) -> Path | None:
+    current = root.parent / "current"
+    if current.is_symlink() and os.readlink(current) == root.name and (root / "bin" / "ardia").is_file():
+        return current
+    return None
 
 
 def trusted_launcher(env=None) -> Path | None:
@@ -544,14 +546,17 @@ def trusted_launcher(env=None) -> Path | None:
 
     cli_home = usage.cli_home(env)
     current = cli_home / "current" / "bin" / "ardia"
+    root = running_root()
+    managed = managed_current(root)
     try:
         if current.is_file() and current.resolve(strict=True).is_relative_to(cli_home.resolve(strict=True)):
             return current
-        if current.is_file() and managed_by_ardia(cli_home / "current"):
+        if managed is not None and (cli_home / "current").is_symlink() and Path(os.readlink(cli_home / "current")) == managed:
             return current
     except OSError:
         pass
-    root = Path(sys.executable).resolve().parents[2]
+    if managed is not None:
+        return managed / "bin" / "ardia"
     launcher = root / "bin" / "ardia"
     if Path(sys.executable).resolve().parent.parent == root / "python" and launcher.is_file() and not launcher.is_symlink():
         return launcher
