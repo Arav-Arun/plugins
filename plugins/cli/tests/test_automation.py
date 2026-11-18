@@ -314,6 +314,31 @@ class Discovery(Base):
         self.assertIn("something other than Ardia", err)
 
 
+class Protocol(Base):
+    def test_an_app_older_than_this_command_needs_says_update_ardia(self):
+        server = self.serve()
+        server.replies["hello"] = lambda params: {"result": {"app": "Ardia", "version": "0.1.0", "protocol": 0}}
+        status, _, err = self.run_cli("windows")
+        self.assertNotEqual(status, 0)
+        self.assertIn("Ardia 0.1.0 speaks control protocol 0, and this ardia needs", err)
+        self.assertIn("update Ardia", err)
+        self.assertNotIn("windows", [m for m, _ in server.requests])
+
+    def test_an_app_that_finds_this_command_too_old_says_update_the_command(self):
+        server = self.serve()
+        server.replies["hello"] = lambda params: {"error": {"code": "unsupported_protocol", "message": "This ardia command speaks control protocol 4, and Ardia 9.0.0 needs 5 or later: update the command"}}
+        status, _, err = self.run_cli("windows")
+        self.assertNotEqual(status, 0)
+        self.assertIn("update the command", err)
+        self.assertNotIn(endpoint.NOT_REACHABLE, err)
+
+    def test_a_newer_app_is_fine(self):
+        server = self.serve()
+        server.replies["hello"] = lambda params: {"result": {"app": "Ardia", "version": "9.0.0", "protocol": 99}}
+        status, _, _ = self.run_cli("windows")
+        self.assertEqual(status, 0)
+
+
 class Methods(Base):
     def test_run(self):
         server = self.serve()
@@ -337,7 +362,7 @@ class Methods(Base):
         server.replies["caller"] = lambda params: {"error": {"code": "unknown_method", "message": "no"}}
         asyncio.run(control.announce(control.socket_path(), terminal))
         hellos = [p for m, p in server.requests if m == "hello"]
-        self.assertEqual(hellos, [{"caller": {"name": "Claude Code"}}, {"caller": terminal.wire()}, {"caller": terminal.wire()}])
+        self.assertEqual(hellos, [{"caller": {"name": "Claude Code"}, "protocol": control.PROTOCOL}, {"caller": terminal.wire(), "protocol": control.PROTOCOL}, {"caller": terminal.wire(), "protocol": control.PROTOCOL}])
         self.assertEqual([m for m, _ in server.requests if m == "caller"], ["caller", "caller"])
 
     def test_announce_never_fails_the_command(self):

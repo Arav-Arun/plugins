@@ -76,10 +76,12 @@ The Ardia side appends one line to the prompt, naming how to reach the instance:
 Copy a Release build into the bench home and run the copy. Never run the build in place (others rebuild it), and
 never point the harness at `/Applications`:
 
+`<ardia checkout>` is a clone of ardia-browser/ardia with a Release build in it; the harness runs from this repo:
+
 ```sh
 mkdir -p ~/ardia-scratch/bench-proper/app
-ditto apps/browser/build-engine-cli/Build/Products/Release/Ardia.app ~/ardia-scratch/bench-proper/app/Ardia.app
-cd apps/cli/bench
+ditto <ardia checkout>/apps/browser/build-engine-cli/Build/Products/Release/Ardia.app ~/ardia-scratch/bench-proper/app/Ardia.app
+cd plugins/cli/bench
 python3 -I harness/bench.py freeze-cli
 python3 -I harness/bench.py run research claude try-1 --results ~/ardia-scratch/bench-proper/results/adhoc
 python3 -I harness/bench.py plan plans/full.json --dry-run
@@ -89,7 +91,7 @@ python3 -I harness/bench.py servers start calendar --port-offset 1000
 python3 -I harness/bench.py stop
 ```
 
-- **`freeze-cli`** snapshots `apps/cli` into its own venv. Every run uses that `ardia` (`--cli installed` uses
+- **`freeze-cli`** snapshots `plugins/cli` into its own venv. Every run uses that `ardia` (`--cli installed` uses
   `~/.local/bin/ardia` instead), so edits made during a plan don't leak into it. `freeze-cli --name N` freezes into
   `devbin-N` and `cli/N.json` instead and leaves the default alone; a plan with `"cli": "dev:N"` uses it, so a rerun
   of a changed CLI can run next to a plan still using the old one.

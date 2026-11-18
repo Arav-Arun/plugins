@@ -65,6 +65,9 @@ impl Failure {
     }
 }
 
+pub const PROTOCOL: i128 = 4;
+pub const MIN_APP_PROTOCOL: i128 = 1;
+
 fn unreachable(detail: Option<&str>) -> Failure {
     let message = match detail {
         Some(detail) => format!("{NOT_REACHABLE} ({detail})"),
@@ -338,15 +341,27 @@ pub fn connect(path: &Path, timeout: f64, caller: &Caller) -> Result<Connection,
         lost: None,
         info: Value::Null,
     };
-    let hello = Value::object(vec![("caller", caller.wire())]);
+    let hello = Value::object(vec![("caller", caller.wire()), ("protocol", Value::Int(PROTOCOL))]);
     match connection.call("hello", Some(hello), Some(timeout)) {
         Ok(info) => {
             if info.get("app") != Some(&Value::str("Ardia")) {
                 return Err(unreachable(Some(&format!("something other than Ardia answers on {name}"))));
             }
+            let spoken = match info.get("protocol") {
+                Some(Value::Int(spoken)) => *spoken,
+                _ => 1,
+            };
+            if spoken < MIN_APP_PROTOCOL {
+                let version = info.get("version").and_then(Value::as_str).unwrap_or("");
+                return Err(Failure::Method {
+                    code: "unsupported_protocol".into(),
+                    message: format!("Ardia {version} speaks control protocol {spoken}, and this ardia needs {MIN_APP_PROTOCOL} or later: update Ardia"),
+                });
+            }
             connection.info = info;
             Ok(connection)
         }
+        Err(Failure::Method { code, message }) if code == "unsupported_protocol" => Err(Failure::Method { code, message }),
         Err(Failure::Method { message, .. }) => Err(unreachable(Some(&format!("hello failed: {message}")))),
         Err(Failure::Unreachable { message, .. }) => Err(Failure::Unreachable { message, sent: false }),
         Err(other) => Err(other),
@@ -414,9 +429,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             json::dumps(&seen[0], Style::Compact, false),
-            r#"{"id":1,"method":"hello","params":{"caller":{"name":"Test"}}}"#
+            r#"{"id":1,"method":"hello","params":{"caller":{"name":"Test"},"protocol":4}}"#
         );
         assert_eq!(json::dumps(&seen[1], Style::Compact, false), r#"{"id":2,"method":"windows"}"#);
+    }
+
+    #[test]
+    fn a_protocol_mismatch_says_which_side_to_update() {
+        let (dir, server) = serve("old-app", |request| {
+            let id = json::dumps(request.get("id").unwrap(), Style::Compact, false);
+            Some(format!(
+                "{{\"id\":{id},\"result\":{{\"app\":\"Ardia\",\"version\":\"0.1.0\",\"protocol\":0}}}}\n"
+            ))
+        });
+        let failure = call(Some(dir.to_str().unwrap()), "windows", None, &caller()).unwrap_err();
+        assert!(matches!(&failure, Failure::Method { code, message } if code == "unsupported_protocol" && message.contains("update Ardia")));
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, server) = serve("old-cli", |request| {
+            let id = json::dumps(request.get("id").unwrap(), Style::Compact, false);
+            Some(format!(
+                "{{\"id\":{id},\"error\":{{\"code\":\"unsupported_protocol\",\"message\":\"update the command\"}}}}\n"
+            ))
+        });
+        let failure = call(Some(dir.to_str().unwrap()), "windows", None, &caller()).unwrap_err();
+        assert_eq!(
+            failure,
+            Failure::Method {
+                code: "unsupported_protocol".into(),
+                message: "update the command".into()
+            }
+        );
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

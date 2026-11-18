@@ -15,6 +15,8 @@ SUN_PATH_MAX = 103
 LINUX_SUN_PATH_MAX = 107
 MAX_LINE = 1024 * 1024
 CONNECT_TIMEOUT = 5.0
+PROTOCOL = 4
+MIN_APP_PROTOCOL = 1
 CALL_TIMEOUT = 30.0
 ANNOUNCE_TIMEOUT = 1.0
 EVENT_QUEUE_CAP = 1000
@@ -315,11 +317,17 @@ async def connect(path: Path, timeout: float = CONNECT_TIMEOUT, caller: Caller |
         raise
     connection = Connection(reader, writer)
     try:
-        info = await connection.call("hello", {"caller": (caller or current_caller()).wire()}, timeout=timeout)
+        info = await connection.call("hello", {"caller": (caller or current_caller()).wire(), "protocol": PROTOCOL}, timeout=timeout)
         if not isinstance(info, dict) or info.get("app") != "Ardia":
             raise unreachable(f"something other than Ardia answers on {path.name}")
+        spoken = info.get("protocol")
+        spoken = spoken if isinstance(spoken, int) and not isinstance(spoken, bool) else 1
+        if spoken < MIN_APP_PROTOCOL:
+            raise MethodError("unsupported_protocol", f"Ardia {info.get('version', '')} speaks control protocol {spoken}, and this ardia needs {MIN_APP_PROTOCOL} or later: update Ardia")
     except MethodError as error:
         await connection.close()
+        if error.code == "unsupported_protocol":
+            raise
         raise unreachable(f"hello failed: {error.message}") from None
     except BaseException as error:
         await connection.close()

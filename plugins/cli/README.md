@@ -1,7 +1,7 @@
 # Command Line
 
 The `ardia` command as an Ardia plugin: drive Ardia, read pages and run its commands from your terminal or an agent.
-Its manual is [docs/cli.md](https://github.com/ardia-browser/ardia/blob/main/docs/cli.md) in ardia-browser/ardia.
+Its manual is [docs/cli.md](docs/cli.md).
 
 Ardia ships this plugin built in as one of its official plugins. Install it in one click from **Settings › Plugins**
 (or the onboarding step that offers it); once installed it stays, with no switch to turn it off. Installing copies it
@@ -24,13 +24,21 @@ It has no helper, page or tools.
 ## Build
 
 ```sh
-ARDIA_PLUGIN_VERSION=0.2.60 plugins/cli/build.sh <out dir>
+plugins/cli/build.sh <out dir>
 ```
 
-This writes `<out dir>/cli`, the plugin folder Ardia bundles, plus the release tarball
-`ardia-cli-<version>-<platform>.tar.gz` and its `.sha256`, which Linux and older Ardia installs download. It needs uv
-and cargo (`rustup`); `scripts/build.sh --help` lists the rest. Ardia's release runs it from the submodule commit it
-pins.
+This writes `<out dir>/cli`, the plugin folder Ardia bundles, packed as `cli-plugin-<version>-<platform>.tar.gz`,
+plus the command's tarball `ardia-cli-<version>-<platform>.tar.gz` for Linux and hand installs, each with its
+`.sha256`. The version is `plugin.json`'s (`ARDIA_PLUGIN_VERSION` overrides it for a local build). It needs uv and cargo
+(`rustup`); `scripts/build.sh --help` lists the rest.
+
+## Release
+
+The command has its own version and releases, apart from Ardia's. Bump `version` in `plugin.json`, merge, and push
+`cli-v<version>`: `.github/workflows/cli-release.yml` builds macOS and Linux, and publishes the release with every
+artifact and its `.sha256` (pull requests run it as a dry run). Ardia then pins it with
+`scripts/release/official-plugins.py pin cli <version>` in ardia-browser/ardia, and its next release bundles and signs
+it (`docs/cli.md` › Build and release).
 
 ## Test
 
@@ -43,7 +51,11 @@ VIRTUAL_ENV=/tmp/ardia-cli-venv uv pip install --require-hashes --no-build -r re
 ```
 
 A few checks compare against Ardia's own source, such as the ingest key, the tab group colours and the feedback
-service. They run when this repo is mounted as ardia-browser/ardia's `plugins` submodule, or with `ARDIA_REPO` pointing at an
-ardia checkout, and skip otherwise. `tests/fixtures/plugins` is a copy of ardia's `tests/fixtures/plugins`, and
-`ardia_cli/schemas/plugin.schema.json` is the schema Ardia writes. ardia's tests fail when either differs, so refresh
-them from there.
+service. They run with `ARDIA_REPO` pointing at an ardia checkout, and skip otherwise.
+`ardia_cli/schemas/plugin.schema.json` is ardia's published `docs/plugin.schema.json`; CI compares it with ardia main
+and fails when they differ, so copy it over. `tests/fixtures/plugins` is a copy of ardia's `tests/fixtures/plugins`.
+
+The command and Ardia talk over the control socket, whose protocol both sides check at `hello`
+(`ardia_cli/control.py` `PROTOCOL`, `MIN_APP_PROTOCOL`; ardia's `automationMethods.ts` `PROTOCOL`,
+`MIN_CLIENT_PROTOCOL`): raise your minimum when you need the other side's newer behaviour, and the mismatch says which
+one to update.
