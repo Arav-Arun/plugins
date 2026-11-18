@@ -1,9 +1,9 @@
 #!/bin/sh
-# Builds the ardia CLI tarball: the Rust ardia binary (apps/cli/rust) as bin/ardia, and the relocatable CPython 3.13 with
+# Builds the ardia CLI tarball: the Rust ardia binary (plugins/cli/rust) as bin/ardia, and the relocatable CPython 3.13 with
 # ardia_cli, its pinned dependencies, esbuild and axe-core that it hands every command it doesn't serve itself.
 #
-#   apps/cli/scripts/build.sh <version> <out dir> [--platform macos-arm64|linux-x64]
-#   apps/cli/scripts/build.sh -h | --help
+#   plugins/cli/scripts/build.sh <version> <out dir> [--platform macos-arm64|linux-x64]
+#   plugins/cli/scripts/build.sh -h | --help
 #
 # Writes <out dir>/ardia-cli-<version>-<platform>.tar.gz and its .sha256 (sha256sum format). The platform defaults to
 # the host's (macos-arm64 on Apple silicon, linux-x64 on Linux x86_64) and must be the host's: the bundled Python

@@ -1,0 +1,10 @@
+{
+  "$schema": "../../schema/plugin.schema.json",
+  "manifest": 1,
+  "name": "cli",
+  "title": "Command Line",
+  "description": "The ardia command: drive Ardia, read pages and run its commands from your terminal or an agent.",
+  "version": "0.0.0",
+  "permissions": ["control"],
+  "programs": [{ "name": "ardia", "path": "bin/ardia", "afterUpdate": ["skills", "refresh"] }]
+}
