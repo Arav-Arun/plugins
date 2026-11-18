@@ -37,6 +37,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("tabs", "list and organize tabs"),
     ("groups", "list and organize tab groups"),
     ("apply", "apply several tab and group operations at once (JSON)"),
+    ("plugins", "install, list and manage plugins"),
     ("feedback", "report a problem or idea to Ardia's developer (agents welcome)"),
     ("star", "star the Ardia repo on GitHub, only after the user says yes"),
 ];
