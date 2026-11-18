@@ -24,6 +24,20 @@ LEGACY = {
 }
 
 
+def exchange_supported(where: Path) -> bool:
+    first, second = where / "swap-probe-a", where / "swap-probe-b"
+    first.mkdir()
+    second.mkdir()
+    try:
+        plugins_cli.rename_exchange(first, second)
+        return True
+    except (NotImplementedError, OSError):
+        return False
+    finally:
+        first.rmdir()
+        second.rmdir()
+
+
 class PluginsCliTest(unittest.TestCase):
     def setUp(self):
         self.data = Path(tempfile.mkdtemp(prefix="ardia-plugins-"))
@@ -200,6 +214,8 @@ class PluginsCliTest(unittest.TestCase):
         self.assertEqual([p.read_text() for p in kept], [before], f"the old install is kept beside it: {err}")
 
     def test_a_forced_replace_swaps_the_folders_in_one_step(self):
+        if not exchange_supported(self.data):
+            self.skipTest("this system can't swap two folders in one step; the fallback is tested separately")
         self.assertEqual(self.ardia("install", str(EXAMPLE))[0], 0)
         target = self.data / "config" / "plugins" / "example"
         (target / "old-marker").write_text("old")
@@ -252,6 +268,39 @@ class PluginsCliTest(unittest.TestCase):
         self.assertEqual(json.loads(out), {"text": "Hello"})
         self.assertEqual(call.call_args.args[1:3], ("plugins.call", {"plugin": "example", "tool": "hello", "input": {"who": "you"}}))
         self.assertGreaterEqual(call.call_args.args[3], 300)
+
+    def test_remove_leaves_the_files_when_ardia_got_the_request_but_never_answered(self):
+        self.ardia("install", str(EXAMPLE))
+        lost = control.unreachable("timed out")
+        lost.sent = True
+        self.unreachable.stop()
+        with mock.patch.object(control, "call", side_effect=lost):
+            status, _, err = self.ardia("remove", "example")
+        self.unreachable.start()
+        self.assertEqual(status, 2)
+        self.assertIn("left as it is", err)
+        self.assertTrue((self.data / "config" / "plugins" / "example" / "plugin.json").exists(), "the app may still be stopping its helper")
+
+    def test_call_input_that_cant_be_sent_as_utf8_is_a_problem_not_a_crash(self):
+        self.unreachable.stop()
+        with mock.patch.object(control, "call", side_effect=UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")):
+            status, _, err = self.ardia("call", "example", "hello", '{"text": "\\ud800"}')
+        self.unreachable.start()
+        self.assertEqual(status, 1)
+        self.assertIn("can't be sent as UTF-8", err)
+
+    def test_a_page_command_path_that_almost_matches_is_refused_at_once(self):
+        import time
+        source = self.data / "slow"
+        shutil.copytree(EXAMPLE, source)
+        manifest = json.loads((source / "plugin.json").read_text())
+        opener = next(c for c in manifest["commands"] if "open" in c)
+        opener["path"] = "/" * 34 + "#"
+        (source / "plugin.json").write_text(json.dumps(manifest))
+        started = time.monotonic()
+        status, _, _ = self.ardia("check", str(source))
+        self.assertEqual(status, 1)
+        self.assertLess(time.monotonic() - started, 2, "the path pattern has no nested repetition to backtrack through")
 
 
 if __name__ == "__main__":

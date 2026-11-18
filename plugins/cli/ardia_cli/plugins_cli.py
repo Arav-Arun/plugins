@@ -154,7 +154,7 @@ def command_problems(commands: list[dict], rows: list[dict], tools: list[dict], 
             problems.append(f'{at} needs either tool (one of the plugin\'s tools) or open ("tab" or "split")')
             continue
         if has_tool:
-            problems += [f"{at}.{key} only goes with open" for key in ("context", "side", "sideSetting") if key in command]
+            problems += [f"{at}.{key} only goes with open" for key in ("context", "side", "sideSetting", "path") if key in command]
             if command["tool"] not in tool_names:
                 problems.append(f"{at}.tool: {command['tool']} isn't one of this plugin's tools")
             continue
@@ -488,8 +488,10 @@ def cmd_remove(args) -> int:
     except MethodError as error:
         complain(f"ardia plugins remove: {error.message}")
         return 1
-    except Unreachable:
-        pass
+    except Unreachable as error:
+        if error.sent:
+            complain(f"ardia plugins remove: Ardia got the request but didn't answer, so {args.name} is left as it is. Run this again.")
+            return unreachable_exit(error)
     target = plugins_folder(args) / args.name
     if not NAME.match(args.name) or not (target.exists() or target.is_symlink()):
         complain(f"ardia plugins remove: there's no plugin {args.name}")
@@ -530,6 +532,9 @@ def cmd_call(args) -> int:
         return unreachable_exit(error)
     except MethodError as error:
         complain(f"ardia plugins call: {error.message}")
+        return 1
+    except UnicodeEncodeError as error:
+        complain(f"ardia plugins call: the input has text that can't be sent as UTF-8 ({error.reason})")
         return 1
     say(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
