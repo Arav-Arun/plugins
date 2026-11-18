@@ -5,11 +5,12 @@ Its manual is [docs/cli.md](https://github.com/ardia-browser/ardia/blob/main/doc
 
 Ardia ships this plugin built in. Turning it on in **Settings › Plugins** (or **Settings › Advanced › Command line ›
 Turn On…**) puts `ardia` on your PATH (`~/.local/bin/ardia`) and turns on "Let the ardia command control Ardia";
-turning it off takes both back. The program runs as you, outside Ardia's sandbox, like anything you install.
+turning it off takes `ardia` off PATH, and control stays on until you turn it off in Settings › Advanced. The program
+runs as you, outside Ardia's sandbox, like anything you install.
 
 It contributes:
 
-- `programs`: `ardia` (`bin/ardia`), run with `skills refresh` after each update;
+- `programs`: `ardia` (`bin/ardia`);
 - the `control` permission.
 
 It has no helper, page or tools.

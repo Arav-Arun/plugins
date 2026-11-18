@@ -260,15 +260,6 @@
             "type": "string",
             "pattern": "^[^/\\\\][^\\\\]*$",
             "description": "An executable file in the plugin's folder, like bin/tool"
-          },
-          "afterUpdate": {
-            "type": "array",
-            "maxItems": 8,
-            "items": {
-              "type": "string",
-              "pattern": "^[^\\u0000]{1,1024}$"
-            },
-            "description": "Arguments the program runs with once after each new version is linked"
           }
         },
         "additionalProperties": false,
