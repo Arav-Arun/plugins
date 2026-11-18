@@ -1,7 +1,11 @@
 use crate::paths::{self, env_set, LINUX};
 use std::path::PathBuf;
 
-pub const NOT_REACHABLE: &str = "Ardia isn't running, or \"Let the ardia command control Ardia\" is off in Settings.";
+pub const NOT_REACHABLE: &str = if LINUX {
+    "Ardia isn't running, or \"Let the ardia command control Ardia\" is off in Settings."
+} else {
+    "Ardia isn't running, or Command Line isn't installed (Settings › Plugins)."
+};
 
 fn xdg_dir(variable: &str, fallback: &[&str]) -> PathBuf {
     match env_set(variable) {

@@ -75,6 +75,14 @@ class Unreachable(Exception):
         return self
 
 
+class Incompatible(Unreachable):
+    def noted(self) -> "Unreachable":
+        from ardia_cli import telemetry
+
+        telemetry.note_error_code("unsupported_protocol")
+        return self
+
+
 class MethodError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -323,11 +331,11 @@ async def connect(path: Path, timeout: float = CONNECT_TIMEOUT, caller: Caller |
         spoken = info.get("protocol")
         spoken = spoken if isinstance(spoken, int) and not isinstance(spoken, bool) else 1
         if spoken < MIN_APP_PROTOCOL:
-            raise MethodError("unsupported_protocol", f"Ardia {info.get('version', '')} speaks control protocol {spoken}, and this ardia needs {MIN_APP_PROTOCOL} or later: update Ardia")
+            raise Incompatible(f"Ardia {info.get('version', '')} speaks control protocol {spoken}, and this ardia needs {MIN_APP_PROTOCOL} or later: update Ardia")
     except MethodError as error:
         await connection.close()
         if error.code == "unsupported_protocol":
-            raise
+            raise Incompatible(error.message) from None
         raise unreachable(f"hello failed: {error.message}") from None
     except BaseException as error:
         await connection.close()

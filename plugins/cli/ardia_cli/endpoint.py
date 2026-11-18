@@ -10,12 +10,14 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from ardia_cli.redact import add_secret
 
-NOT_REACHABLE = (
-    "Ardia isn't running, or \"Let the ardia command control Ardia\" is off in Settings."
-)
 CONTROL_FILE = "ArdiaControl.json"
 DATA_DIR_HELP = "the Ardia data dir (default: $ARDIA_DATA_DIR, else the installed app's)"
 LINUX = sys.platform.startswith("linux")
+NOT_REACHABLE = (
+    "Ardia isn't running, or \"Let the ardia command control Ardia\" is off in Settings."
+    if LINUX
+    else "Ardia isn't running, or Command Line isn't installed (Settings › Plugins)."
+)
 
 
 def xdg_dir(variable: str, *fallback: str, absolute: bool = False) -> Path:

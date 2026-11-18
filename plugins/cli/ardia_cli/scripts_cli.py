@@ -23,7 +23,7 @@ tsconfig.json is read). Imports must stay inside the script's own folder, and no
 Commands:
   new NAME           scaffold NAME.user.ts in the current directory
   test FILE          run it once in a background tab of its own and report what it did
-  install FILE       build it and have Ardia run it (needs "Let the ardia command control Ardia" on)
+  install FILE       build it and have Ardia run it (needs control allowed)
   uninstall NAME     remove an installed script by @name or id
   list               the installed scripts
 """
@@ -54,7 +54,7 @@ Ardia Scripts extension (<data dir>/Scripts/extension/), which Ardia loads into 
 with the same @name again updates it. Then it waits up to 10 s for Ardia to report each profile.
 
 Exit status: 0 loaded (or Ardia quit and loads it on its next launch), 1 a build or load error, 2 Ardia isn't
-running or "Let the ardia command control Ardia" is off, 3 Ardia didn't answer in 10 s (the outcome is unknown).
+running or doesn't allow control, 3 Ardia didn't answer in 10 s (the outcome is unknown).
 """
 NEW_TEMPLATE = """\
 // ==UserScript==

@@ -8,7 +8,7 @@ SESSION_SHOWN = "<data dir>/<app profile>/Ardia/linux-session.json" if endpoint.
 PROFILE_FOLDERS_SHOWN = "<data dir>/" if endpoint.LINUX else "Chromium/"
 READS = f"""\
 Reads {SESSION_SHOWN} and Chromium's History files, never cookies, passwords,
-Login Data or Web Data. Needs Ardia running with "Let the ardia command control Ardia" on. Incognito, guest and
+Login Data or Web Data. Needs Ardia running with control allowed (Command Line installed; on Linux, its Settings switch). Incognito, guest and
 system profiles are skipped.
 
 Exit status: 0 done, 1 the data couldn't be read or ran out of time (20 s), 2 Ardia can't be reached.

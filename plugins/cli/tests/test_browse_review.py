@@ -785,3 +785,58 @@ class BrokenPipeIsQuiet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamFreesClosedClients(unittest.TestCase):
+    def test_closed_viewers_on_an_idle_page_give_back_their_slots(self):
+        from websockets.asyncio.client import connect
+
+        stream = {"token": "tok", "clients": set(), "input": False, "cast": SimpleNamespace(waiters=[], latest=None), "page": None}
+        ctx = SimpleNamespace(state=SimpleNamespace(extras={}))
+
+        async def scenario():
+            server = await capture.start_stream_server(ctx, stream, 0)
+            port = server.sockets[0].getsockname()[1]
+            outcomes = []
+            for _ in range(6):
+                try:
+                    async with connect(f"ws://127.0.0.1:{port}/?token=tok", open_timeout=3):
+                        outcomes.append("open")
+                except Exception as error:
+                    outcomes.append(getattr(getattr(error, "response", None), "status_code", type(error).__name__))
+                for _ in range(50):
+                    if not stream["clients"]:
+                        break
+                    await asyncio.sleep(0.01)
+            server.close()
+            return outcomes, len(stream["clients"]), len(stream["cast"].waiters)
+
+        self.assertEqual(run(scenario()), (["open"] * 6, 0, 0))
+
+
+class CredentialsStayWithTheirSite(unittest.TestCase):
+    def challenge(self, origin, frame="T", kind="Document", source="Server"):
+        return {"requestId": "r", "frameId": frame, "resourceType": kind, "authChallenge": {"source": source, "origin": origin, "scheme": "basic"}}
+
+    def test_only_the_tabs_own_page_at_the_first_asking_origin_gets_them(self):
+        sent = []
+
+        class Page:
+            target_id = "T"
+
+            async def send(self, method, params):
+                sent.append(params["authChallengeResponse"])
+
+        ctx = SimpleNamespace(state=SimpleNamespace(extras={"credentials": {"username": "u", "password": "p", "origin": None}}))
+        page = Page()
+        for params in (
+            self.challenge("https://ads.example", frame="child"),
+            self.challenge("https://site.example"),
+            self.challenge("https://site.example", kind="XHR"),
+            self.challenge("https://other.example"),
+            self.challenge("https://site.example", source="Proxy"),
+            self.challenge("https://site.example"),
+        ):
+            run(capture.handle_auth(ctx, page, params))
+        given = {"response": "ProvideCredentials", "username": "u", "password": "p"}
+        self.assertEqual(sent, [{"response": "Default"}, given, {"response": "Default"}, {"response": "Default"}, {"response": "Default"}, given])

@@ -332,6 +332,19 @@ class Protocol(Base):
         self.assertIn("update the command", err)
         self.assertNotIn(endpoint.NOT_REACHABLE, err)
 
+    def test_every_entry_point_says_which_side_to_update_in_one_line(self):
+        server = self.serve()
+        server.replies["hello"] = lambda params: {"error": {"code": "unsupported_protocol", "message": "update the command"}}
+        for argv in (("run", "newTab"), ("windows",), ("commands",), ("tabs",), ("events",), ("tabs", "activate", "1")):
+            status, _, err = self.run_cli(*argv)
+            self.assertEqual((status, err.strip()), (2, "ardia: update the command"), argv)
+        server.replies["hello"] = lambda params: {"result": {"app": "Ardia", "version": "0.1.0", "protocol": 0}}
+        for argv in (("run", "newTab"), ("windows",), ("tabs",)):
+            status, _, err = self.run_cli(*argv)
+            self.assertEqual(status, 2, argv)
+            self.assertIn("update Ardia", err, argv)
+            self.assertNotIn("Traceback", err, argv)
+
     def test_a_newer_app_is_fine(self):
         server = self.serve()
         server.replies["hello"] = lambda params: {"result": {"app": "Ardia", "version": "9.0.0", "protocol": 99}}

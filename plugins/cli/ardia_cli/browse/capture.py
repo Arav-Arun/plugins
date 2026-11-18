@@ -298,14 +298,27 @@ async def enable_credentials(ctx, page, username, password):
             raise error.during("set credentials", "HTTP auth answers Fetch.authRequired") from None
 
     await activate(ctx, page, "route", enable)
-    ctx.state.extras["credentials"] = {"username": username, "password": password}
+    ctx.state.extras["credentials"] = {"username": username, "password": password, "origin": None}
     ctx.state.leases.add("route")
     install_router(ctx, page)
 
 
-async def handle_auth(ctx, page, params):
+def credentials_for(ctx, page, params):
     credentials = ctx.state.extras.get("credentials")
-    response = {"response": "ProvideCredentials", **credentials} if credentials else {"response": "Default"}
+    challenge = params.get("authChallenge") or {}
+    if not credentials or challenge.get("source") != "Server":
+        return None
+    if params.get("resourceType") != "Document" or params.get("frameId") != page.target_id:
+        return None
+    origin = challenge.get("origin")
+    if credentials["origin"] is None:
+        credentials["origin"] = origin
+    return credentials if origin and origin == credentials["origin"] else None
+
+
+async def handle_auth(ctx, page, params):
+    credentials = credentials_for(ctx, page, params)
+    response = {"response": "ProvideCredentials", "username": credentials["username"], "password": credentials["password"]} if credentials else {"response": "Default"}
     try:
         await page.send("Fetch.continueWithAuth", {"requestId": params.get("requestId"), "authChallengeResponse": response})
     except BrowseError:
@@ -688,7 +701,15 @@ async def start_stream_server(ctx, stream, port):
                         continue
                     await stream_input(ctx, stream["page"], message)
 
-            await asyncio.gather(frames(), inputs())
+            tasks = [asyncio.ensure_future(frames()), asyncio.ensure_future(inputs())]
+            try:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for task in done:
+                task.result()
         except Exception:
             logging.getLogger("ardia_cli.browse").debug("stream client ended", exc_info=True)
         finally:

@@ -3,7 +3,7 @@
   "manifest": 1,
   "name": "cli",
   "title": "Command Line",
-  "description": "The ardia command: drive Ardia, read pages and run its commands from your terminal or an agent.",
+  "description": "Drive Ardia from your terminal or an agent.",
   "version": "0.3.0",
   "icon": "terminal.fill",
   "alwaysOn": true,

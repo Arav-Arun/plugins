@@ -1,6 +1,6 @@
 # Command Line
 
-The `ardia` command as an Ardia plugin: drive Ardia, read pages and run its commands from your terminal or an agent.
+The `ardia` command as an Ardia plugin: drive Ardia from your terminal or an agent.
 Its manual is [docs/cli.md](docs/cli.md).
 
 Ardia ships this plugin built in as one of its official plugins. Install it in one click from **Settings › Plugins**

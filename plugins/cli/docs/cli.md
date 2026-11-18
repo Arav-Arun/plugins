@@ -250,7 +250,9 @@ mouse position, so a humanized path starts where the last one ended. `ardia brow
   multi-page `read` reads that page again in a new tab, once (`READER_TRIES`; telemetry `read_tabs_reopened`); a second
   detach fails that page only. When the tab is still open, `open`, the load wait and an action's change report attach
   to it again (`State.reattach`) and put back what the session set on it: init scripts, the `set` overrides (viewport,
-  device, geolocation, media, offline, headers) and request interception for routes and credentials. What can't be put
+  device, geolocation, media, offline, headers) and request interception for routes and credentials (`set credentials` answers only the tab's own page's server
+  challenge, and only from the first origin that asks; a frame, a subresource, a proxy or any other origin gets the
+  browser's default). What can't be put
   back is dropped from the session's bookkeeping and the command fails with `code: "setup_lost"`, naming it. The CLI
   never detaches a tab itself: a `Network.disable` the page doesn't confirm in 2 s (Chromium waits on the page's main
   thread and on a pending navigation) leaves the session as it is, and a change report counts only requests that began
@@ -1260,7 +1262,9 @@ The app writes `ArdiaControl.json` when the setting is on:
 following links and trusts it only when it's a regular file the user owns, mode 0600, and `pid` is alive. It connects
 to `ws://127.0.0.1:P<browser>?token=<token>`; every CDP call goes over that one browser socket
 (flattened sessions), so it always carries the token. A missing, stale or unsafe file, or a refused connection, prints one line and exits 2:
-`Ardia isn't running, or "Let the ardia command control Ardia" is off in Settings.` There's no port scanning and no
+`Ardia isn't running, or Command Line isn't installed (Settings › Plugins).` (on Linux, where the switch stays:
+`Ardia isn't running, or "Let the ardia command control Ardia" is off in Settings.`). A command and an Ardia whose
+control protocols don't fit say which one to update, in one line, from every command. There's no port scanning and no
 `/json` fallback on this path. The token never reaches the output: stdout and stderr are redacted as a stream (a token
 split across writes is held back until it's complete), and so are log records and everything a logging handler
 formats, tracebacks included. The `websockets` logger (only the `stream` server uses it) stays at ERROR. The stream holds back only a tail that could start a

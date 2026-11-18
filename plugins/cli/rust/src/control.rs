@@ -353,15 +353,15 @@ pub fn connect(path: &Path, timeout: f64, caller: &Caller) -> Result<Connection,
             };
             if spoken < MIN_APP_PROTOCOL {
                 let version = info.get("version").and_then(Value::as_str).unwrap_or("");
-                return Err(Failure::Method {
-                    code: "unsupported_protocol".into(),
+                return Err(Failure::Unreachable {
                     message: format!("Ardia {version} speaks control protocol {spoken}, and this ardia needs {MIN_APP_PROTOCOL} or later: update Ardia"),
+                    sent: false,
                 });
             }
             connection.info = info;
             Ok(connection)
         }
-        Err(Failure::Method { code, message }) if code == "unsupported_protocol" => Err(Failure::Method { code, message }),
+        Err(Failure::Method { code, message }) if code == "unsupported_protocol" => Err(Failure::Unreachable { message, sent: false }),
         Err(Failure::Method { message, .. }) => Err(unreachable(Some(&format!("hello failed: {message}")))),
         Err(Failure::Unreachable { message, .. }) => Err(Failure::Unreachable { message, sent: false }),
         Err(other) => Err(other),
@@ -443,7 +443,7 @@ mod tests {
             ))
         });
         let failure = call(Some(dir.to_str().unwrap()), "windows", None, &caller()).unwrap_err();
-        assert!(matches!(&failure, Failure::Method { code, message } if code == "unsupported_protocol" && message.contains("update Ardia")));
+        assert!(matches!(&failure, Failure::Unreachable { message, sent: false } if message.contains("update Ardia") && !message.contains(NOT_REACHABLE)));
         server.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -456,9 +456,9 @@ mod tests {
         let failure = call(Some(dir.to_str().unwrap()), "windows", None, &caller()).unwrap_err();
         assert_eq!(
             failure,
-            Failure::Method {
-                code: "unsupported_protocol".into(),
-                message: "update the command".into()
+            Failure::Unreachable {
+                message: "update the command".into(),
+                sent: false
             }
         );
         server.join().unwrap();
