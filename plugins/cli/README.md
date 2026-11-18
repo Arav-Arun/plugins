@@ -3,14 +3,18 @@
 The `ardia` command as an Ardia plugin: drive Ardia, read pages and run its commands from your terminal or an agent.
 Its manual is [docs/cli.md](https://github.com/ardia-browser/ardia/blob/main/docs/cli.md) in ardia-browser/ardia.
 
-Ardia ships this plugin built in. Turning it on in **Settings › Plugins** (or **Settings › Advanced › Command line ›
-Turn On…**) puts `ardia` on your PATH (`~/.local/bin/ardia`) and turns on "Let the ardia command control Ardia";
-turning it off takes `ardia` off PATH, and control stays on until you turn it off in Settings › Advanced. The program
-runs as you, outside Ardia's sandbox, like anything you install.
+Ardia ships this plugin built in and **always on**: there is nothing to install or turn on. At launch Ardia copies it
+into `~/Library/Application Support/Ardia/Programs/cli/`, checks the copy against the digest the release signed, and
+links `~/.local/bin/ardia` to it. An `ardia` installed the old way is adopted: its link moves to the new copy, and
+`~/Library/Application Support/Ardia/CLI/current` points at it, so paths saved through the old home keep working. The
+first time it's installed it turns on "Let the ardia command control Ardia", unless you turned that off; after that the
+setting is yours. The program runs as you, outside Ardia's sandbox, like anything you install.
 
 It contributes:
 
-- `programs`: `ardia` (`bin/ardia`);
+- `alwaysOn`, which only a plugin built into Ardia may declare;
+- `programs`: `ardia` (`bin/ardia`), with `afterUpdate` run once per new version, as `install.sh` did after an upgrade:
+  `skills install --auto`, `skills refresh`, `computer refresh`;
 - the `control` permission.
 
 It has no helper, page or tools.
