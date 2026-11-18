@@ -37,13 +37,14 @@
     },
     "permissions": {
       "type": "array",
-      "maxItems": 4,
+      "maxItems": 5,
       "items": {
         "enum": [
           "tabs",
           "fullUrls",
           "commands",
-          "network"
+          "network",
+          "control"
         ]
       }
     },
@@ -242,6 +243,40 @@
       "required": [
         "run"
       ]
+    },
+    "programs": {
+      "type": "array",
+      "maxItems": 4,
+      "description": "Commands Ardia puts on your PATH while the plugin is on",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+            "description": "The command's name on PATH"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^[^/\\\\][^\\\\]*$",
+            "description": "An executable file in the plugin's folder, like bin/tool"
+          },
+          "afterUpdate": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "pattern": "^[^\\u0000]{1,1024}$"
+            },
+            "description": "Arguments the program runs with once after each new version is linked"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "path"
+        ]
+      }
     },
     "hooks": {
       "type": "array",
