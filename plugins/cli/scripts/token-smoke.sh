@@ -3,13 +3,16 @@ set -euo pipefail
 
 usage="usage: token-smoke.sh <Ardia.app> <ardia command> [metro host:port]
 Runs ardia browse read, open and a refused command against a hidden instance of <Ardia.app> over the real token
-connection (no DevTools port), with the given ardia command. A Debug build needs its Metro as the third argument."
+connection (no DevTools port), with the given ardia command. A Debug build needs its Metro as the third argument.
+Needs an ardia checkout for its instance helpers: \$ARDIA_REPO, else the checkout this plugins repo is a submodule of."
 case "${1:-}" in -h | --help | "") echo "$usage"; [ -n "${1:-}" ] && exit 0 || exit 64 ;; esac
 app="$(cd "$1" && pwd -P)"
 cli="${2:?$usage}"
 metro="${3:-}"
 case "$app" in /Applications/*) echo "error: never an installed app" >&2; exit 1 ;; esac
-root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+here="$(cd "$(dirname "$0")/.." && pwd -P)"
+root="${ARDIA_REPO:-$(git -C "$here" rev-parse --show-superproject-working-tree)}"
+[ -f "$root/scripts/lib/instance.mjs" ] || { echo "error: needs an ardia checkout: set ARDIA_REPO, or run it from ardia's plugins submodule" >&2; exit 64; }
 work="$(cd "$(mktemp -d /tmp/ac-token.XXXXXX)" && pwd -P)"
 data="$work/d"
 mkdir -p "$data"
@@ -33,7 +36,7 @@ field() {
 
 (cd "$root" && node -e "import('./scripts/lib/instance.mjs').then(({ session }) => { const fs = require('fs'); fs.writeFileSync(process.argv[1] + '/session.json', JSON.stringify(session({ settings: { cliControl: true } }))); fs.writeFileSync(process.argv[1] + '/onboarding.json', JSON.stringify({ version: 1, completedAt: 1 })); })" "$data")
 port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
-python3 -m http.server "$port" --bind 127.0.0.1 --directory "$root/apps/cli/tests/fixtures/browse" >/dev/null 2>&1 &
+python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/tests/fixtures/browse" >/dev/null 2>&1 &
 server=$!
 open -g -n --env ARDIA_BACKGROUND=1 --env "ARDIA_DATA_DIR=$data" ${metro:+--env "ARDIA_INSTANCE=jsLocation=$metro"} \
   --stdout "$data/app.out.log" --stderr "$data/app.out.log" "$app"
