@@ -5,7 +5,7 @@
   "title": "Command Line",
   "description": "The ardia command: drive Ardia, read pages and run its commands from your terminal or an agent.",
   "version": "0.3.0",
-  "icon": "terminal",
+  "icon": "terminal.fill",
   "alwaysOn": true,
   "official": true,
   "permissions": ["control"],

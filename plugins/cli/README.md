@@ -13,7 +13,7 @@ is yours. The program runs as you, outside Ardia's sandbox, like anything you in
 
 It declares:
 
-- `official` and `alwaysOn`, which only a plugin built into Ardia may declare, and the `terminal` icon (`official` lists it among
+- `official` and `alwaysOn`, which only a plugin built into Ardia may declare, and the `terminal.fill` icon (`official` lists it among
   Ardia's official plugins; `alwaysOn` means once installed, it stays);
 - `programs`: `ardia` (`bin/ardia`), with `afterUpdate` run once per new version, as `install.sh` did after an upgrade:
   `skills install --auto`, `skills refresh`, `computer refresh`;
