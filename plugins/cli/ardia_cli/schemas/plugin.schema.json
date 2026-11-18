@@ -283,7 +283,20 @@
     },
     "alwaysOn": {
       "const": true,
-      "description": "Built-in plugins only: on from the start, with no switch"
+      "description": "Built-in plugins only: once installed, no switch turns it off"
+    },
+    "official": {
+      "const": true,
+      "description": "Built-in plugins only: listed among Ardia's official plugins"
+    },
+    "autoInstall": {
+      "const": true,
+      "description": "Built-in plugins only, with alwaysOn: installed on a new profile with no click"
+    },
+    "icon": {
+      "type": "string",
+      "pattern": "^[a-z0-9.]{1,64}$",
+      "description": "An SF Symbol name"
     },
     "hooks": {
       "type": "array",

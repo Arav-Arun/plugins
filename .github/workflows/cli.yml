@@ -76,6 +76,11 @@ jobs:
           ~/.local/bin/uv venv --python 3.13 "$RUNNER_TEMP/venv"
           VIRTUAL_ENV="$RUNNER_TEMP/venv" ~/.local/bin/uv pip install --quiet --require-hashes --no-build -r requirements.lock
       - run: '"$RUNNER_TEMP/venv/bin/python" -m unittest discover -s tests'
+      - name: plugin.json passes ardia plugins check
+        env:
+          ARDIA_DATA_DIR: ${{ runner.temp }}/data
+          ARDIA_TELEMETRY: "off"
+        run: '"$RUNNER_TEMP/venv/bin/python" -m ardia_cli plugins check "$PWD"'
 
   plugin:
     name: Plugin folder on macOS

@@ -3,16 +3,18 @@
 The `ardia` command as an Ardia plugin: drive Ardia, read pages and run its commands from your terminal or an agent.
 Its manual is [docs/cli.md](https://github.com/ardia-browser/ardia/blob/main/docs/cli.md) in ardia-browser/ardia.
 
-Ardia ships this plugin built in and **always on**: there is nothing to install or turn on. At launch Ardia copies it
+Ardia ships this plugin built in as one of its official plugins. Install it in one click from **Settings › Plugins**
+(or the onboarding step that offers it); once installed it stays, with no switch to turn it off. Installing copies it
 into `~/Library/Application Support/Ardia/Programs/cli/`, checks the copy against the digest the release signed, and
-links `~/.local/bin/ardia` to it. An `ardia` installed the old way is adopted: its link moves to the new copy, and
-`~/Library/Application Support/Ardia/CLI/current` points at it, so paths saved through the old home keep working. The
-first time it's installed it turns on "Let the ardia command control Ardia", unless you turned that off; after that the
-setting is yours. The program runs as you, outside Ardia's sandbox, like anything you install.
+links `~/.local/bin/ardia` to it. An `ardia` installed the old way is adopted on update with no click: its link moves
+to the new copy, and `~/Library/Application Support/Ardia/CLI/current` points at it, so paths saved through the old
+home keep working. Installing turns on "Let the ardia command control Ardia", as the sheet says; after that the setting
+is yours. The program runs as you, outside Ardia's sandbox, like anything you install.
 
-It contributes:
+It declares:
 
-- `alwaysOn`, which only a plugin built into Ardia may declare;
+- `official` and `alwaysOn`, which only a plugin built into Ardia may declare, and the `terminal` icon (`official` lists it among
+  Ardia's official plugins; `alwaysOn` means once installed, it stays);
 - `programs`: `ardia` (`bin/ardia`), with `afterUpdate` run once per new version, as `install.sh` did after an upgrade:
   `skills install --auto`, `skills refresh`, `computer refresh`;
 - the `control` permission.
