@@ -550,8 +550,6 @@ class InstallScript(unittest.TestCase):
         self.assertEqual((status, lines[-1]), (1, "error the tarball has links that point outside it"))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class MacHookLauncher(unittest.TestCase):
@@ -569,3 +567,7 @@ class MacHookLauncher(unittest.TestCase):
             old.parent.mkdir(parents=True)
             old.write_text("#!/bin/sh\n")
             self.assertEqual(paths.launcher, old, "an old or adopted home keeps its path")
+
+
+if __name__ == "__main__":
+    unittest.main()
