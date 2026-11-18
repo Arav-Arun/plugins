@@ -1051,7 +1051,12 @@ class AgentPaths:
 
     @property
     def launcher(self) -> Path:
-        return self.cli_home / "current" / "bin" / "ardia"
+        installed = self.cli_home / "current" / "bin" / "ardia"
+        if self.linux or os.path.exists(installed):
+            return installed
+        from ardia_cli import computer
+
+        return computer.trusted_launcher() or installed
 
 
 def agent_paths(linux: bool | None = None) -> AgentPaths:

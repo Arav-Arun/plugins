@@ -467,7 +467,7 @@ def install_agent(args, launchctl, sleep, systemctl) -> int:
         return 1
     paths = hooks.agent_paths()
     if not os.path.exists(paths.launcher):
-        complain(f"ardia hooks install: the ardia command isn't installed at {paths.launcher}; turn on \"Let the ardia command control Ardia\" in Ardia's Settings to install it")
+        complain(f"ardia hooks install: the ardia command isn't installed at {paths.launcher}; install Command Line in Ardia's Settings › Plugins")
         return 1
     try:
         hooks.read_hooks(hooks_file(args))

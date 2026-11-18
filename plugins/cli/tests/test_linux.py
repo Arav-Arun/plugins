@@ -552,3 +552,20 @@ class InstallScript(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MacHookLauncher(unittest.TestCase):
+    def test_a_plugin_install_with_no_old_home_runs_hooks_from_the_stable_store_link(self):
+        from unittest import mock
+
+        from ardia_cli import computer
+
+        with tempfile.TemporaryDirectory() as scratch:
+            store = Path(scratch) / "Programs" / "cli" / "current" / "bin" / "ardia"
+            paths = hooks.AgentPaths(Path(scratch), Path(scratch) / "CLI", False)
+            with mock.patch.object(computer, "trusted_launcher", return_value=store):
+                self.assertEqual(paths.launcher, store)
+            old = Path(scratch) / "CLI" / "current" / "bin" / "ardia"
+            old.parent.mkdir(parents=True)
+            old.write_text("#!/bin/sh\n")
+            self.assertEqual(paths.launcher, old, "an old or adopted home keeps its path")
