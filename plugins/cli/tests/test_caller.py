@@ -120,7 +120,8 @@ class Naming(unittest.TestCase):
         chain_now = caller.ancestry(os.getpid())
         self.assertEqual(chain_now[0].pid, os.getpid())
         self.assertEqual(chain_now[0].ppid, os.getppid())
-        self.assertEqual(os.path.realpath(chain_now[0].path), os.path.realpath(sys.executable))
+        framework_python = os.path.join(sys.base_prefix, "Resources", "Python.app", "Contents", "MacOS", "Python")
+        self.assertIn(os.path.realpath(chain_now[0].path), {os.path.realpath(sys.executable), os.path.realpath(framework_python)})
         self.assertTrue(chain_now[0].argv)
         self.assertIsInstance(caller.current(), Caller)
 
