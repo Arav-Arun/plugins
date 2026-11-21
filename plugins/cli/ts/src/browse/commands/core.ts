@@ -4,10 +4,11 @@ import { hostnameOf, urlsplit } from "../../pylib/urllib.ts";
 import { type Browser } from "../cdp/browser.ts";
 import { Cancelled, shield, sleep, untilCancelled } from "../cdp/cancel.ts";
 import * as temptabs from "../state/temptabs.ts";
-import { BrowseError, Gated, OutcomeUnknown, Usage } from "../daemon-errors.ts";
+import { BrowseError, CdpError, ConnectionLost, Gated, OutcomeUnknown, Usage } from "../daemon-errors.ts";
+import { envelopeGone } from "../cdp/raw.ts";
 import { Result } from "../daemon/render.ts";
 import { flag } from "../metrics.ts";
-import { type Page, quiet } from "../state/page.ts";
+import { detachedError, type Page, quiet } from "../state/page.ts";
 import { type State } from "../state/state.ts";
 import { monotonic, waitUntil } from "../state/wait.ts";
 import { afterSameDocument, beforeNavigating } from "../read/settle.ts";
@@ -15,7 +16,7 @@ import { arrival, attach, settled } from "../changes/observe.ts";
 import { type Ctx } from "./ctx.ts";
 import { register } from "./index.ts";
 import { cmdRead } from "./read-page.ts";
-import { need, normalizeUrl, parse } from "./parse.ts";
+import { type Flags, need, normalizeUrl, type Parsed, parse } from "./parse.ts";
 import { applyOpenOptions, takeOpenOptions } from "./setup.ts";
 
 const DROPPED_CONNECTION = /ERR_(EMPTY_RESPONSE|CONNECTION_(RESET|CLOSED|REFUSED|TIMED_OUT)|TIMED_OUT|HTTP2_PROTOCOL_ERROR|SSL_PROTOCOL_ERROR|QUIC_PROTOCOL_ERROR)/u;
@@ -107,12 +108,88 @@ export function siteSilent(url: string, timeout: number, error: OutcomeUnknown):
   );
 }
 
+function sessionGone(error: unknown): boolean {
+  if (error instanceof BrowseError && error.code === "tab_detached") return true;
+  return error instanceof CdpError && envelopeGone(error);
+}
+
+export class NavigationRefused extends BrowseError {
+  constructor(readonly refusal: Gated) {
+    super(refusal.text, refusal.data, refusal.code);
+  }
+}
+
+function canonical(url: string): string {
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
+async function ownNavigation(page: Page, url: string, seen: string | null): Promise<string | null> {
+  await page.refreshFrames();
+  const loader = page.loader(page.mainFrame);
+  if (loader === null || loader === seen) return null;
+  const landed = canonical(page.url);
+  if (landed === canonical(url)) return loader;
+  let history: Record<string, unknown>;
+  try {
+    history = await page.send("Page.getNavigationHistory");
+  } catch (error) {
+    if (!(error instanceof CdpError)) throw error;
+    return null;
+  }
+  const entries = Array.isArray(history["entries"]) ? (history["entries"] as Record<string, unknown>[]) : [];
+  const current = entries[Number(history["currentIndex"])];
+  if (current === undefined || current["transitionType"] !== "typed") return null;
+  if (canonical(String(current["url"] || "")) !== landed || canonical(String(current["userTypedURL"] || "")) !== canonical(url)) return null;
+  await page.refreshFrames();
+  return page.loader(page.mainFrame) === loader && canonical(page.url) === landed ? loader : null;
+}
+
+export function navigationUnchecked(url: string): string {
+  return `Ardia detached the tab before it answered Page.navigate for ${url}, and the tab couldn't be checked afterwards to see whether the page loaded`;
+}
+
+export async function startNavigation(page: Page, url: string, timeout: number): Promise<Record<string, unknown>> {
+  for (let resent = false; ; resent = true) {
+    await page.state.reattach(page, url);
+    const session = page.session;
+    const seen = page.loader(page.mainFrame);
+    try {
+      const result = await page.send("Page.navigate", { url }, { timeout });
+      page.navigationsSent += 1;
+      return result;
+    } catch (error) {
+      if (sessionGone(error)) {
+        if (session !== null) page.endSession(session);
+        if (!resent) continue;
+        throw detachedError(url);
+      }
+      page.navigationsSent += 1;
+      if (error instanceof Gated) throw new NavigationRefused(error);
+      if (!(error instanceof OutcomeUnknown) || page.session !== null) throw error;
+      let loader: string | null;
+      try {
+        await page.state.reattach(page, url);
+        loader = await ownNavigation(page, url, seen);
+      } catch (failure) {
+        if (!(failure instanceof BrowseError) || failure instanceof ConnectionLost || failure instanceof OutcomeUnknown) throw failure;
+        throw new OutcomeUnknown("`Page.navigate`", navigationUnchecked(url));
+      }
+      if (loader === null) throw error;
+      return { loaderId: loader };
+    }
+  }
+}
+
 async function sendNavigate(ctx: Ctx, page: Page, url: string): Promise<Record<string, unknown>> {
   let result: Record<string, unknown>;
   try {
-    result = await page.send("Page.navigate", { url }, { timeout: ctx.timeout });
+    result = await startNavigation(page, url, ctx.timeout);
   } catch (error) {
-    if (error instanceof Gated) {
+    if (error instanceof NavigationRefused) {
       throw new BrowseError(`Ardia's policy only lets the ardia command open web pages (http, https, data, about:blank); ${url} isn't one`, null, "policy_refused");
     }
     if (error instanceof OutcomeUnknown) throw siteSilent(url, ctx.timeout, error);
@@ -123,6 +200,7 @@ async function sendNavigate(ctx: Ctx, page: Page, url: string): Promise<Record<s
 }
 
 export async function navigate(ctx: Ctx, page: Page, url: string, until = "load"): Promise<void> {
+  await ctx.state.reattach(page, url);
   if (page.crashed) {
     await sendNavigate(ctx, page, url);
     await page.recovered(ctx.timeout);
@@ -144,7 +222,7 @@ export async function navigate(ctx: Ctx, page: Page, url: string, until = "load"
         "its content so far is here, and `wait --load load` waits for the rest";
     }
   }
-  await ctx.state.reattach(page);
+  await ctx.state.reattach(page, url);
   await page.refreshFrames();
 }
 
@@ -299,9 +377,12 @@ async function tabShown(state: State, page: Page): Promise<boolean | null> {
   return same.length === 1 ? Boolean(same[0]["embedderData"]["tabActive"]) : null;
 }
 
-export async function showTab(ctx: Ctx, given: Page): Promise<Page> {
+export async function showTab(ctx: Ctx, given: Page, handOff = true): Promise<Page> {
   let page = given;
-  if (await engineOffscreen(ctx.state, page.targetId)) page = await leaveOffscreen(ctx, page);
+  if (await engineOffscreen(ctx.state, page.targetId)) {
+    if (!handOff) throw new Usage(OPEN_HERE_OFFSCREEN);
+    page = await leaveOffscreen(ctx, page);
+  }
   const now = () => performance.now() / 1000;
   const deadline = now() + 5;
   let nudge = 0;
@@ -323,16 +404,44 @@ export async function showTab(ctx: Ctx, given: Page): Promise<Page> {
   }
 }
 
+export const OPEN_HERE_WITHOUT_TAB = "open --here navigates the tab you picked with `tab active`, and this session hasn't picked one: run `ardia browse tab active` first, or drop --here to open a tab of its own";
+
+function knownTitle(state: Ctx["state"], page: Page): string {
+  const view = state.views.get(page.targetId) as { title?: unknown; url?: unknown; loader?: unknown } | undefined;
+  if (typeof view?.title === "string" && view.title && view.url === page.url && view.loader === page.loader(page.mainFrame)) return view.title;
+  const info = state.targetInfos.get(page.targetId) as { title?: unknown; url?: unknown } | undefined;
+  return typeof info?.title === "string" && info.url === page.url ? info.title : "";
+}
+
+export const OPEN_HERE_WITHOUT_URL = "open --here takes the URL to load in the tab you picked with `tab active`";
+export const OPEN_HERE_SETUP = "open --here doesn't add init scripts or devtools to the tab you picked with `tab active`; drop --enable and --init-script";
+export const OPEN_HERE_OFFSCREEN = "open --here --show would take the tab you picked out of its off-screen viewport; drop --show";
+const OPEN_FLAGS: Flags = {
+  "--enable": "multi",
+  "--init-script": "multi",
+  "--capture-console": "bool",
+  "--headers": "value",
+  "--label": "value",
+  "--show": "bool",
+  "--read": "bool",
+  "--here": "bool",
+};
+
 export async function cmdOpen(ctx: Ctx, argv: string[]): Promise<Result> {
-  const [options, args] = parse(argv, {
-    "--enable": "multi",
-    "--init-script": "multi",
-    "--capture-console": "bool",
-    "--headers": "value",
-    "--label": "value",
-    "--show": "bool",
-    "--read": "bool",
-  });
+  const [options, args] = parse(argv, OPEN_FLAGS);
+  if (!options["here"]) return openTab(ctx, options, args, null);
+  const setup = [options["enable"], options["init_script"], ctx.options["enable"], ctx.options["init_script"], ctx.options["init_scripts"]];
+  if (setup.some((value) => (Array.isArray(value) ? value.length > 0 : Boolean(value)))) throw new Usage(OPEN_HERE_SETUP);
+  if (args.length === 0) throw new Usage(OPEN_HERE_WITHOUT_URL);
+  const state = ctx.state;
+  await state.connect();
+  const target = state.attached;
+  if (target === null || !state.targetInfos.has(target)) throw new Usage(OPEN_HERE_WITHOUT_TAB);
+  if (wantsShow(ctx, options) && (await engineOffscreen(state, target))) throw new Usage(OPEN_HERE_OFFSCREEN);
+  return openTab(ctx, options, args, target);
+}
+
+async function openTab(ctx: Ctx, options: Parsed, args: string[], here: string | null): Promise<Result> {
   if (options["headers"]) throw new Usage("ardia browse can't scope headers to an origin at launch; run `ardia browse set headers <json>` before `open`");
   takeOpenOptions(ctx, options);
   const state = ctx.state;
@@ -340,14 +449,20 @@ export async function cmdOpen(ctx: Ctx, argv: string[]): Promise<Result> {
   const url = args.length > 0 ? normalizeUrl(args[0] as string) : null;
   const show = wantsShow(ctx, options);
   const reporting = Boolean(url) && !ctx.options["no_changes"] && state.topCommand !== "script" && !options["read"];
-  const borrowed = state.current && state.current === state.attached ? state.attached : null;
-  const freshTab = !(state.current && state.targetInfos.has(state.current) && !borrowed);
+  if (here !== null) {
+    if (!state.targetInfos.has(here)) throw new Usage(OPEN_HERE_WITHOUT_TAB);
+    flag("open_here", true);
+  }
+  const borrowed = here === null && state.current && state.current === state.attached ? state.attached : null;
+  const freshTab = here === null && !(state.current && state.targetInfos.has(state.current) && !borrowed);
   let cameFrom = "about:blank";
+  let replacedFrom: [Set<string>, string] | null = null;
   let page: Page;
   if (freshTab) page = await newTab(ctx, reporting ? null : url, (options["label"] as string | undefined) ?? null, false, show && !reporting);
   else {
-    page = await state.page();
+    page = here !== null ? await state.page(here) : await state.page();
     cameFrom = page.url;
+    if (url) replacedFrom = [state.documentsOf(page), knownTitle(state, page) || page.url];
     if (page.crashed && url) {
       await navigate(ctx, page, "about:blank");
       cameFrom = "about:blank";
@@ -358,10 +473,15 @@ export async function cmdOpen(ctx: Ctx, argv: string[]): Promise<Result> {
   if (reporting) await settled(target, () => navigate(ctx, target, url as string));
   else if (url && !freshTab) await navigate(ctx, page, url);
   page = await state.reattach(page);
-  if (show && (reporting || !freshTab)) page = await showTab(ctx, page);
+  if (here !== null) {
+    state.current = here;
+    if (state.pinTab) state.pinnedTarget = here;
+  }
+  if (show && (reporting || !freshTab)) page = await showTab(ctx, page, here === null);
   const background = freshTab && !show ? await page.takesInput() : null;
   await page.refreshFrames();
   const title = await pageTitle(page);
+  if (replacedFrom !== null) state.noteOpenReplaced(page, replacedFrom[0], replacedFrom[1], title || page.url);
   const data: Record<string, unknown> = { url: page.url, title };
   let text = `✓ ${title}\n  ${page.url}${offscreenNote(state)}`;
   const stillLoading = state.loadNote;
@@ -373,23 +493,21 @@ export async function cmdOpen(ctx: Ctx, argv: string[]): Promise<Result> {
   if (background !== null) {
     const tab = state.tabId(page.targetId);
     Object.assign(data, { tabId: tab, background: true, takesInput: background });
-    let where = `→ Opened in its own background tab [${tab}]`;
     if (borrowed) {
       const left = state.tabId(borrowed);
       data["left"] = left;
       flag("open_moved_tab", true);
-      where =
-        `→ [${tab}] is this session's tab now, a background tab of its own, since this session uses your tab [${left}] ` +
-        `and won't navigate it; \`tab ${left}\` goes back`;
+      text =
+        `→ Opened in a new background tab [${tab}]; the tab you picked with \`tab active\` [${left}] is unchanged ` +
+        `(\`open --here <url>\` navigates it, \`tab ${left}\` goes back)\n${text}`;
     }
-    if (borrowed || !background) {
-      text +=
-        `\n${where}; ` +
-        (background ? "it takes input without being shown" : `this Ardia doesn't deliver input there. use: ardia browse tab ${tab} --show (or open <url> --show)`);
+    if (!background) {
+      text += `\n→ Opened in its own background tab [${tab}]; this Ardia doesn't deliver input there. use: ardia browse tab ${tab} --show (or open <url> --show)`;
     }
   }
   if (options["read"]) {
     flag("open_read", true);
+    if (here !== null && (state.current !== here || !state.targetInfos.has(here))) throw new BrowseError("The tab you picked closed before it could be read", { targetId: here }, "tab_gone");
     const read = await cmdRead(ctx, []);
     data["read"] = read.data;
     return new Result(data, `${text}\n\n${read.text}`, true);

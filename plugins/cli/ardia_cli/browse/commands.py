@@ -36,6 +36,7 @@ class Result:
     text: str | None = "✓ Done"
     page_content: bool = False
     whole: bool = False
+    notice: str | None = None
 
 
 @dataclass
@@ -68,6 +69,15 @@ def command(*names):
     return register
 
 
+TRUE_WORDS = ("true", "1", "yes", "on")
+
+
+def bool_value(name: str, inline: str | None) -> bool:
+    if inline is None or inline.lower() in TRUE_WORDS:
+        return True
+    raise Usage(f"{name} takes no value: give {name}, or leave it out")
+
+
 def parse(argv: list[str], flags: dict[str, str] | None = None, aliases: dict[str, str] | None = None):
     flags = flags or {}
     aliases = aliases or {}
@@ -86,7 +96,7 @@ def parse(argv: list[str], flags: dict[str, str] | None = None, aliases: dict[st
             kind = flags[name]
             key = name.lstrip("-").replace("-", "_")
             if kind == "bool":
-                options[key] = True
+                options[key] = bool_value(name, inline)
             else:
                 if inline is None:
                     if index >= len(argv):
@@ -1302,7 +1312,7 @@ FIND_ACTIONS = ("click", "fill", "type", "press", "check", "uncheck", "select", 
 FIND_LOCATORS = ("role", "text", "label", "placeholder", "alt", "title", "testid", "first", "last", "nth")
 MAX_CANDIDATES = 8
 CLOSE_ENOUGH = 0.6
-BATCH_DEFAULT_CAP = 6000
+BATCH_DEFAULT_CAP = 12000
 SHOWN_HOLD = 0.3
 FIND_WAIT = 1.5
 

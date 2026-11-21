@@ -1,6 +1,7 @@
 import { NeedsPython } from "../paths.ts";
 import { abandonWork, toStderr } from "../printable.ts";
 import { Call, finish } from "../telemetry.ts";
+import { knownBatchStep } from "../telemetry-names.ts";
 import { cliVersion } from "../version.ts";
 import { cleanMetrics, exitOf, outputChars, processStatus, textOf } from "./answer.ts";
 import { allowedFlags, commandName, hoist, hoistFailure, jsonIntent, jsonIntentOfArgv, plainJsonIntent, refusalJsonIntent, splitGlobals, truthy, Usage } from "./args.ts";
@@ -72,8 +73,7 @@ function printAnswer(answer: Map<string, Value>, secrets: Secrets, printer: Prin
     return { status: 1, crash: invalid };
   }
   if (asJson) codeJsonAnswer(answer, command);
-  const code = answer.get("code");
-  if (typeof code === "string") call.noteErrorCode(code);
+  noteAnswerCodes(answer, call);
   if (!answeredHere(answer)) {
     for (const [key, value] of cleanMetrics(answer.get("metrics"))) call.metrics.set(key, value);
     call.metrics.set("output_chars", chars);
@@ -84,10 +84,25 @@ function printAnswer(answer: Map<string, Value>, secrets: Secrets, printer: Prin
     const shown = text === "" ? "" : secrets.redact(text);
     if (stream === 1) printer.out(shown);
     else printer.err(shown);
-    if (printer.stopped) return { status: printer.closed ? CLOSED : 1, crash: printer.crash };
+    if (printer.stopped) {
+      if (stream === 1 && printer.closed && printer.crash === undefined) printer.errAfterClosed(closedNotice(answer, secrets));
+      return { status: printer.closed ? CLOSED : 1, crash: printer.crash };
+    }
   }
   const status = exitOf(answer.get("exit"));
   return status instanceof PythonCrash ? { status: 1, crash: status } : { status };
+}
+
+export function noteAnswerCodes(answer: Map<string, Value>, call: Call): void {
+  const code = answer.get("code");
+  if (typeof code === "string") call.noteErrorCode(code);
+  const step = answer.get("failed_step_command");
+  if (typeof step === "string") call.metrics.set("failed_step_command", knownBatchStep(step));
+}
+
+function closedNotice(answer: Map<string, Value>, secrets: Secrets): string {
+  const text = textOf(answer.get("err"), secrets.known());
+  return typeof text === "string" && text !== "" ? secrets.redact(text) : "";
 }
 
 async function run(browse: string[], printer: Printer, call: Call, plugin: boolean, python: string | null): Promise<Outcome | undefined> {
@@ -126,6 +141,7 @@ async function run(browse: string[], printer: Printer, call: Call, plugin: boole
     if (outPath !== null) {
       const command = rest[0] as string;
       const again = splitGlobals(AS_TEXT.includes(command) ? [...stripped, "--max-output", "0"] : ["--json", ...stripped]);
+      again.found.flags.set("out_only", true);
       const answer = await roundTrip(again.found, again.rest, secrets, call, python);
       return saveAnswer(answer, secrets, printer, call, command, outPath);
     }

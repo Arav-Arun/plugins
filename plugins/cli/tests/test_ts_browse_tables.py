@@ -33,7 +33,7 @@ def known_browse_commands() -> list:
     from ardia_cli import telemetry
 
     aliases, known = telemetry.browse_names()
-    return sorted(known | set(aliases))
+    return sorted(known | set(aliases) | set(TS_HELP_COMMANDS))
 
 
 DAEMON_METRICS = CLI / "ts" / "src" / "browse" / "metrics.ts"
@@ -58,8 +58,8 @@ def ts_tables() -> str:
     from ardia_cli.browse.commands import ALIASES, MUTATING
 
     shared = browse_cli.VALUE_FLAGS | browse_cli.BOOL_FLAGS
-    local = {name: sorted(set(re.findall(r"(?<![\w-])(--?[a-z][a-z0-9-]*)", usage_text)) - shared)
-             for name, usage_text in sorted(browse_help.COMMANDS.items())}
+    local = {name: sorted(set(re.findall(r"(?<![\w-])(--?[a-z][a-z0-9-]*)", with_ts_additions(name, usage_text))) - shared)
+             for name, usage_text in sorted({**browse_help.COMMANDS, **TS_HELP_COMMANDS}.items())}
     owns = {name: sorted(flags) for name, flags in sorted(browse_cli.COMMAND_OWNS.items())}
     flags = (command_metrics.FLAGS | command_metrics.READ_FLAGS | command_metrics.ACT_FLAGS | command_metrics.CHANGE_FLAGS
              | command_metrics.FLOW_FLAGS)
@@ -105,6 +105,33 @@ TS_HELP_ADDITIONS = (
      "  eval <js>                  Run JavaScript in the page [-b base64] [--stdin] [--timeout 2m] [--isolated]\n"),
     ("OVERVIEW", "             set device|geo|offline|headers|credentials|media\n",
      "             set device|geo|offline|headers|credentials|media|permission\n"),
+    ("OVERVIEW", "set device|geo|offline|\nheaders|credentials|media, network route,",
+     "set device|geo|offline|\nheaders|credentials|media|permission, network route,"),
+    ("OVERVIEW", "(--links <pattern>: every matching link; -s sel)\n",
+     "(--links <pattern>: every matching link; -s sel)\n"
+     "  links [pattern]            List the session tab's links whose URL contains pattern (read --links … --list)\n"),
+    ("OVERVIEW", "Get Info:    get text|html|value|attr <name>|title|url|count|box|styles <sel>\n",
+     "Get Info:    get text|html|value|title|url|count|box|styles <sel> | attr <sel> <name> (or -s <sel>)\n"),
+    ("OVERVIEW", "             find role <role> <action> --name <name>: exact name first, several matches list refs\n",
+     "             find role <role> <action> --name <name>: exact name first, several matches list refs\n"
+     "             --nth <n> picks match n of several (from 0)\n"),
+    ("get", "ardia browse get text|html|value|attr <name>|title|url|count|box|styles <sel>\n",
+     "ardia browse get text|html|value|title|url|count|box|styles <sel> | attr <sel> <name>\n\n"
+     "attribute works as attr. The selector can also come as -s <sel> or --selector <sel>.\n"),
+    ("screenshot", "Without a path it saves under $TMPDIR/ardia-browse/screenshots.",
+     "Without a path it saves under $TMPDIR/ardia-browse/screenshots.\n-s <sel> or --selector <sel> names the element to capture, like [sel]."),
+    ("click", "one that enables it in the same batch.",
+     "one that enables it in the same batch.\nThe selector can also come as -s <sel> or --selector <sel>."),
+    ("fill", "Prints what changed.",
+     "Prints what changed. The selector can also come as -s <sel> or --selector <sel>, before the text."),
+    ("find", "An element that isn't there yet is waited for up to 1.5 s.",
+     "An element that isn't there yet is waited for up to 1.5 s. find role … --nth <n> picks match n of several\n"
+     "(from 0, like find nth) and says which; it works only with find role."),
+    ("open", "[--capture-console] [--label name]\n", "[--capture-console] [--label name] [--here]\n"),
+    ("open", "When the session was using the user's tab (`tab active`), the answer\nnames both: `→ [t4] is this session's tab now …; `tab t3` goes back`.",
+     "When the session is using the user's tab (`tab active`), open goes to a new background tab of its own and its\n"
+     "first line says so, leaving the user's tab as it was; open --here <url> navigates the picked tab instead.\n"
+     "A ref from the page a later open replaced fails as stale and names both pages; `tab new <url>` keeps both."),
     ("click", "[--button left|right|middle] [--humanize]", "[--button left|right|middle] [--touch] [--humanize]"),
     ("click", "one that enables it in the same batch.",
      "one that enables it in the same batch.\n--touch taps instead when the page supports touch (it reports touch points), and clicks otherwise, saying so."),
@@ -112,7 +139,8 @@ TS_HELP_ADDITIONS = (
      "Modifiers: Control, Alt, Shift, Meta. Control or Meta with a selects all, with z undoes and with y or Shift+z redoes;\n"
      "on macOS Meta+c/x/v, Meta and Alt with the arrows, Backspace and Delete also edit as they do in a text field."),
     ("wait", "--fn evaluates in the page's main world, like eval. Timeouts default to 25 s.",
-     "--fn evaluates in the page's main world, like eval (--isolated: in an isolated world). Timeouts default to 25 s."),
+     "--fn evaluates in the page's main world, like eval (--main-world says so; --isolated: in an isolated world).\n"
+     "Timeouts default to 25 s."),
     ("eval", "| --stdin [--timeout 2m] [--out <file>]\n", "| --stdin [--timeout 2m] [--out <file>] [--isolated]\n"),
     ("eval", "Runs in the page's main world (the one place, with init scripts and the React hook, that does).",
      "Runs in the page's main world (the one place, with init scripts and the React hook, that does), where the\n"
@@ -121,8 +149,16 @@ TS_HELP_ADDITIONS = (
     ("set", "  | credentials <user> <pass> | media [dark|light|no-preference] [reduced-motion]\n\n",
      "  | credentials <user> <pass> | media [dark|light|no-preference] [reduced-motion]\n"
      "  | permission geolocation|notifications|camera|microphone|clipboard [more …]\n\n"
-     "set permission grants those permissions to the tab's site ahead of any prompt.\n"),
+     "set permission grants those permissions to the tab's site ahead of any prompt (Browser.setPermission, which no\n"
+     "released Ardia allows yet: it fails with policy_refused).\n"),
 )
+
+
+TS_HELP_COMMANDS = {
+    "links": "ardia browse links [pattern] [--limit n]\n\n"
+             "Lists the links on the session's tab whose URL contains the pattern (* or none: every link), in page\n"
+             "order: read's link listing as one command.",
+}
 
 
 def with_ts_additions(name: str, text: str) -> str:
@@ -141,7 +177,7 @@ def ts_help() -> str:
     from ardia_cli.browse import help as browse_help
 
     rows = "".join(f"  {json.dumps(name)}: {json.dumps(with_ts_additions(name, text), ensure_ascii=False)},\n"
-                   for name, text in browse_help.COMMANDS.items())
+                   for name, text in {**browse_help.COMMANDS, **TS_HELP_COMMANDS}.items())
     return (f"export const OVERVIEW = {json.dumps(with_ts_additions('OVERVIEW', browse_help.OVERVIEW), ensure_ascii=False)};\n"
             f"export const COMMANDS: Readonly<Record<string, string>> = {{\n{rows}}};\n")
 

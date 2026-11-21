@@ -15,6 +15,7 @@ import type { Ctx } from "./ctx.ts";
 import { register } from "./index.ts";
 import { findAct } from "../act/find-act.ts";
 import { need, parse } from "./parse.ts";
+import { shlexQuote } from "../../pylib/shlex.ts";
 import { frameOrMain } from "./shared.ts";
 
 export const FIND_ACTIONS = ["click", "fill", "type", "press", "check", "uncheck", "select", "hover", "focus", "dblclick", "text"];
@@ -93,11 +94,116 @@ export function closestNames(wanted: string, names: readonly string[]): string[]
   return names.slice(0, MAX_CANDIDATES);
 }
 
-export async function findRole(ctx: Ctx, page: Page, frame: string, role: string, name: string | null, exact: boolean): Promise<[Element, string, string]> {
+async function nthOfRole(page: Page, frame: string, role: string, found: Candidate[], nth: number, shown: string): Promise<[Element, string, string] | null> {
+  const resolved: [Element, string][] = [];
+  for (const [node, nodeName] of found) {
+    const element = await page.resolveBackend(Number(node["backendDOMNodeId"]), frame, `role=${role}`);
+    if (element !== null) resolved.push([element, nodeName]);
+    if (resolved.length > nth) break;
+  }
+  const picked = resolved[nth];
+  if (resolved.length === 0) return null;
+  if (picked === undefined) {
+    const count = resolved.length;
+    throw new BrowseError(`--nth ${nth} asks for match ${nth + 1}, and only ${count} ${shown} element${count === 1 ? "" : "s"} match (--nth counts from 0)`, { matches: count }, "not_found");
+  }
+  return [picked[0], shown, picked[1]];
+}
+
+export function closestName(wanted: string, names: readonly string[]): string | null {
+  const target = plain(wanted);
+  const words = new Set(target.match(WORDS) ?? []);
+  let best: string | null = null;
+  let bestScore = CLOSE_ENOUGH;
+  for (const text of names) {
+    const own = plain(text);
+    const mine = new Set(own.match(WORDS) ?? []);
+    const shared = [...words].filter((word) => mine.has(word)).length / Math.max(words.size, 1);
+    const score = shared + new SequenceMatcher(target, own).ratio();
+    if (score > bestScore || (best === null && score >= bestScore)) [best, bestScore] = [text, score];
+  }
+  return best;
+}
+
+type Closest = { ref: string | null; name: string; count: number; partial: boolean };
+export const CLOSEST_CHECKED = 50;
+
+export class RoleMiss extends BrowseError {
+  constructor(
+    readonly opening: string,
+    readonly listing: string,
+    readonly details: Record<string, unknown>,
+    readonly ofRole: Candidate[],
+    readonly role: string,
+    readonly shown: string,
+    readonly wanted: string | null,
+    readonly frame: string,
+  ) {
+    super(`${opening}${listing}`, details, "not_found");
+  }
+}
+
+export async function withClosest(ctx: Ctx, page: Page, miss: RoleMiss): Promise<BrowseError> {
+  if (miss.wanted === null) return miss;
+  const nearest = await closestWithRef(ctx, page, miss.frame, miss.role, miss.shown, miss.ofRole, miss.wanted);
+  if (nearest === null) return miss;
+  const name = shownName(nearest.name);
+  const lead =
+    nearest.ref !== null
+      ? `; closest: ${miss.shown} "${name}" ${nearest.ref}`
+      : `; closest: ${miss.shown} "${name}", ${nearest.count}${nearest.partial ? "+" : ""} of them ` +
+        `(find role ${miss.role} <action> --name ${shlexQuote(nearest.name)} --exact --nth <n>, from 0)`;
+  const closest = nearest.ref !== null ? { ref: nearest.ref, name: nearest.name } : { name: nearest.name, count: nearest.count, partial: nearest.partial };
+  return new BrowseError(`${miss.opening}${lead}${miss.listing}`, { ...miss.details, closest }, "not_found");
+}
+
+async function closestWithRef(ctx: Ctx, page: Page, frame: string, role: string, shown: string, ofRole: Candidate[], wanted: string): Promise<Closest | null> {
+  const best = closestName(wanted, [...new Set(ofRole.map(([, text]) => text).filter((text) => text))]);
+  if (best === null) return null;
+  const named = ofRole.filter(([, nodeName]) => nodeName === best);
+  try {
+    const partial = named.length > CLOSEST_CHECKED;
+    const resolved: Element[] = [];
+    for (const [node] of named.slice(0, CLOSEST_CHECKED)) {
+      const element = await page.resolveBackend(Number(node["backendDOMNodeId"]), frame, `role=${role}`);
+      if (element !== null) resolved.push(element);
+    }
+    if (resolved.length === 0) return null;
+    flag("find_closest_ref", true);
+    if (resolved.length > 1 || partial) return { ref: null, name: best, count: resolved.length, partial };
+    return { ref: `@${ctx.state.addRef(page, resolved[0] as Element, shown, best)}`, name: best, count: 1, partial: false };
+  } catch (error) {
+    if (error instanceof BrowseError) return null;
+    throw error;
+  }
+}
+
+export async function findRole(
+  ctx: Ctx,
+  page: Page,
+  frame: string,
+  role: string,
+  name: string | null,
+  exact: boolean,
+  nth: number | null = null,
+): Promise<[Element, string, string]> {
   const tree = await page.send("Accessibility.getFullAXTree", { frameId: frame }, { timeout: 60, session: page.sessionFor(frame) });
   const nodes = Array.isArray(tree["nodes"]) ? tree["nodes"] : [];
   const [found, how] = roleCandidates(nodes, role, name, exact);
   const shown = ROLE_NAMES[role] ?? role;
+  const miss = (): RoleMiss => {
+    const ofRole = roleCandidates(nodes, role, null, false)[0];
+    const names = [...new Set(ofRole.map(([, text]) => text).filter((text) => text))];
+    const close = name !== null ? closestNames(name, names) : names.slice(0, MAX_CANDIDATES);
+    const named = name !== null ? ` named "${name}"` : "";
+    const hint = close.length && name !== null ? `; the ${shown}s here are: ${close.map((text) => `"${shownName(text)}"`).join(", ")}` : "";
+    return new RoleMiss(`No ${shown}${named} on this page`, hint, { candidates: close }, ofRole, role, shown, name, frame);
+  };
+  if (nth !== null) {
+    const picked = await nthOfRole(page, frame, role, found, nth, shown);
+    if (picked === null) throw miss();
+    return picked;
+  }
   const resolved: [Element, string][] = [];
   for (const [node, nodeName] of found.slice(0, MAX_CANDIDATES + 1)) {
     const element = await page.resolveBackend(Number(node["backendDOMNodeId"]), frame, `role=${role}`);
@@ -107,27 +213,26 @@ export async function findRole(ctx: Ctx, page: Page, frame: string, role: string
     const [element, nodeName] = resolved[0] as [Element, string];
     return [element, shown, nodeName];
   }
-  if (resolved.length === 0) {
-    const names = [...new Set(roleCandidates(nodes, role, null, false)[0].map(([, text]) => text).filter((text) => text))];
-    const close = name !== null ? closestNames(name, names) : names.slice(0, MAX_CANDIDATES);
-    const named = name !== null ? ` named "${name}"` : "";
-    const hint = close.length && name !== null ? `; the ${shown}s here are: ${close.map((text) => `"${shownName(text)}"`).join(", ")}` : "";
-    throw new BrowseError(`No ${shown}${named} on this page${hint}`, { candidates: close }, "not_found");
-  }
+  if (resolved.length === 0) throw miss();
   const listed = resolved.slice(0, MAX_CANDIDATES).map(([element, nodeName]) => ({ ref: `@${ctx.state.addRef(page, element, shown, nodeName)}`, name: nodeName }));
   const more = found.length > MAX_CANDIDATES ? ` (and ${found.length - MAX_CANDIDATES} more)` : "";
   const kind = how === "exact" ? "are named exactly" : "have names containing";
-  const fix = how === "exact" ? "Use one of their refs" : "Use a ref, or the full name";
+  const fix = how === "exact" ? "Use one of their refs (or --nth <n>, from 0)" : "Use a ref, or the full name (or --nth <n>, from 0)";
   const lines = listed.map((item) => `  ${shown} "${shownName(item.name)}" [ref=${item.ref.slice(1)}]`).join("\n");
   throw new BrowseError(`${found.length} ${shown}s ${kind} "${name}"${more}, so nothing was clicked. ${fix}:\n${lines}`, { candidates: listed }, "ambiguous");
 }
 
 export async function cmdFind(ctx: Ctx, argv: string[]): Promise<Result> {
-  const [options, given] = parse(argv, { "--name": "value", "--exact": "bool", "--partial": "bool", "--no-humanize": "bool" });
+  const [options, given] = parse(argv, { "--name": "value", "--exact": "bool", "--partial": "bool", "--no-humanize": "bool", "--nth": "value" });
   need(given, 1, "find <locator> <value> [action] [text]");
   if (options["exact"] && options["partial"]) throw new Usage("find takes --exact or --partial, not both");
   const [locator, args, wantedName] = findArguments(given, (options["name"] as string | undefined) ?? null);
   need(args, 1, "find <locator> <value> [action] [text]");
+  if (options["nth"] !== undefined && !/^[0-9]+$/u.test(String(options["nth"]))) throw new Usage(`--nth takes a number counting from 0, not ${String(options["nth"])}`);
+  const nth = options["nth"] === undefined ? null : Number(options["nth"]);
+  if (nth !== null && locator !== "role") throw new Usage(`--nth works with find role; for a CSS selector use \`find nth <n> <selector>\``);
+  if (nth !== null && nth < 0) throw new Usage("--nth counts from 0, so it takes 0 or more");
+  if (nth !== null) flag("guessed_syntax", true);
   const page = await ctx.state.page();
   const frame = frameOrMain(ctx, page);
   const exact = Boolean(options["exact"]);
@@ -149,7 +254,7 @@ export async function cmdFind(ctx: Ctx, argv: string[]): Promise<Result> {
     let element: Element | null = null;
     let role = "";
     let name = "";
-    if (locator === "role") [element, role, name] = await findRole(ctx, page, frame, value, wantedName, exact);
+    if (locator === "role") [element, role, name] = await findRole(ctx, page, frame, value, wantedName, exact, nth);
     else if (locator === "text") element = await fromRemote("(t, e) => ardiaBrowse.findText(t, e)", [value, exact], `text=${value}`);
     else if (locator === "label") element = await fromRemote("(t, e) => ardiaBrowse.findLabel(t, e)", [value, exact], `label=${value}`);
     else if (locator === "placeholder" || locator === "alt" || locator === "title") {
@@ -169,7 +274,8 @@ export async function cmdFind(ctx: Ctx, argv: string[]): Promise<Result> {
       found = await locate();
       break;
     } catch (error) {
-      if (!(error instanceof BrowseError) || error.code !== "not_found" || monotonic() >= deadline) throw error;
+      if (!(error instanceof BrowseError) || error.code !== "not_found") throw error;
+      if (monotonic() >= deadline) throw error instanceof RoleMiss ? await withClosest(ctx, page, error) : error;
     }
     await sleep(0.15);
   }

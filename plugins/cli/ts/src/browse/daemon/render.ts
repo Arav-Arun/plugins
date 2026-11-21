@@ -9,7 +9,7 @@ import { formatG, groupThousands } from "../../pylib/format.ts";
 import { inert, jsonSafe } from "../../printable.ts";
 import { redact } from "../../redact.ts";
 import { BrowseError, ConnectionLost } from "../daemon-errors.ts";
-import { flag, rendered } from "../metrics.ts";
+import { FAILED_WITHOUT_CODE, flag, rendered } from "../metrics.ts";
 import { closeFd, entryInfo, listNames, unlinkQuietly, wellFormed, writeAllFd } from "../paths.ts";
 import { tokenHex } from "../tokens.ts";
 import { MUTATING } from "./names.ts";
@@ -25,7 +25,7 @@ export const NARROW_ANY = "snapshot -i, snapshot -s <css>, get text <css>, read 
 export const NARROWER: Readonly<Record<string, string>> = {
   snapshot: "snapshot -i (interactive only), snapshot -s <css> (one region), find role <role> <action> --name <text> (act without a snapshot)",
   get: "get text <css> or read -s <css> (one region)",
-  read: "read -s <css> (one region per page), or fewer pages",
+  read: "read -s <css> (one region per page), read --scroll -s <list> --match <text> (just the rows with that text), or fewer pages",
   eval: "return less from the script, or get text <css> / read -s <css> for one region",
   script: "return fewer fields or rows from the script",
   flow: "flow run <name> --fields a,b --limit n --where field=value",
@@ -40,6 +40,7 @@ export type Answer = [number, string, string];
 
 export class Result {
   failed = false;
+  notice: string | null = null;
   batch: unknown = undefined;
   outputCap: number | null = null;
   whole = false;
@@ -76,7 +77,7 @@ export function compactJson(value: unknown): string {
 
 export function render(options: Options, result: Result | null = null, error: BrowseError | null = null, name = ""): Answer {
   const [code, out, err] = renderPlain(options, result, error, name);
-  rendered(name, result as never, error === null ? null : { code: safeCode(error.code) }, out);
+  rendered(name, result as never, error === null ? null : { code: safeCode(error.code), exit: error.exitCode }, out + err);
   return [code, redact(out), redact(err)];
 }
 
@@ -100,8 +101,11 @@ export function renderPlain(options: Options, result: Result | null, error: Brow
     return [code, `${compactJson({ success: true, data: done.data, error: null })}\n`, ""];
   }
   if (done.text === null) return [code, "", ""];
-  let text = done.whole ? redact(done.text) : cap(redact(done.text), options, name, done.outputCap);
-  const notice = capNotice(text);
+  const plainText = redact(done.text);
+  let text = done.whole ? plainText : cap(plainText, options, name, done.outputCap);
+  const capped = text !== plainText ? capNotice(text) : "";
+  if (capped) text = text.slice(0, text.length - capped.length).replace(/\n$/u, "");
+  const notice = [done.notice, capped].filter((part) => part).join("\n");
   if (done.pageContent && options["content_boundaries"]) text = boundary(text);
   return [code, `${inert(text)}\n`, notice ? `${inert(notice)}\n` : ""];
 }
@@ -157,19 +161,55 @@ export function cap(text: string, options: Options, name = "", fallback: number 
       cutAt = newlineAt;
     }
   }
+  const narrower = (name === "snapshot" ? regionNarrower(text) : null) ?? (Object.hasOwn(NARROWER, name) ? NARROWER[name] : NARROW_ANY);
   const saved = spill(text);
-  const where = saved ? `; all of it is in ${saved}` : "";
+  const where = saved ? ` (full output: ${saved})` : "";
   return (
     text.slice(0, cutAt) +
-    `\n${CAP_NOTICE}${groupThousands(String(cut))} of ${groupThousands(String(total))} characters${where}. Narrow it instead: ` +
-    `${Object.hasOwn(NARROWER, name) ? NARROWER[name] : NARROW_ANY}. Only if you need every line: --max-output ${total}]`
+    `\n${CAP_NOTICE}${groupThousands(String(cut))} of ${groupThousands(String(total))} characters. Narrow it: ${narrower}; ` +
+    `or --max-output ${total} for every line${where}]`
+  );
+}
+
+const REGION_ROLES = new Set([
+  "main", "navigation", "complementary", "form", "region", "search", "dialog", "table", "grid", "list", "listbox", "tree", "menu",
+  "tablist", "article", "feed",
+]);
+export const REGION_MOST = 0.7;
+const SNAPSHOT_LINE = /^( *)- ([A-Za-z]+)/u;
+
+export function regionNarrower(text: string): string | null {
+  const lines = text.split("\n");
+  const seen = new Map<string, number>();
+  const sizes: [string, number][] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const found = SNAPSHOT_LINE.exec(lines[index] as string);
+    if (found === null || !REGION_ROLES.has(found[2] as string)) continue;
+    const role = found[2] as string;
+    const depth = (found[1] as string).length;
+    let end = index + 1;
+    while (end < lines.length) {
+      const below = /^( *)- /u.exec(lines[end] as string);
+      if (below !== null && (below[1] as string).length <= depth) break;
+      end += 1;
+    }
+    seen.set(role, (seen.get(role) ?? 0) + 1);
+    sizes.push([role, end - index]);
+  }
+  const unique = sizes.filter(([role, count]) => seen.get(role) === 1 && count <= REGION_MOST * lines.length).sort((a, b) => b[1] - a[1]);
+  const biggest = unique[0];
+  if (biggest === undefined || biggest[1] < 2) return null;
+  const [role, count] = biggest;
+  return (
+    `snapshot -i -s "[role=${role}]" (the ${role}, ${groupThousands(String(count))} of ${groupThousands(String(lines.length))} lines), ` +
+    "find role <role> <action> --name <text> (act without a snapshot)"
   );
 }
 
 export function capNotice(text: string): string {
   const cut = text.lastIndexOf("\n");
   const last = cut < 0 ? text : text.slice(cut + 1);
-  const cutShort = last.startsWith("[") && last.includes("Narrow it instead: ") && last.includes("--max-output ");
+  const cutShort = last.startsWith("[") && last.includes("Narrow it: ") && last.includes("--max-output ");
   return last.startsWith(CAP_NOTICE) || cutShort ? last : "";
 }
 
@@ -292,7 +332,16 @@ export function encodeAnswer(
         )
       : new BrowseError(`The answer was too large (${data.length} bytes, the limit is ${limit}); narrow it (snapshot -s, -d, --max-output)`);
   const [exit, shownOut, shownErr] = renderPlain({ json: asJson }, null, error);
-  const daemon = fields.filter(([key]) => key === "daemon");
-  const fallback = new Map<string, Value>([["exit", BigInt(exit)], ["out", shownOut], ["err", shownErr], ...(error.code ? [["code", error.code] as [string, Value]] : []), ...daemon]);
-  return Buffer.from(`${dumps(fallback, "spaced", true)}\n`, "utf8");
+  const given = fields.find(([key]) => key === "code")?.[1];
+  const kept = fields.filter(([key]) => key === "daemon" || key === "failed_step_command" || key === "metrics");
+  const shownCode = error.code ?? (typeof given === "string" && given ? given : FAILED_WITHOUT_CODE);
+  const fallback = (extra: [string, Value][]) =>
+    Buffer.from(`${dumps(new Map<string, Value>([["exit", BigInt(exit)], ["out", shownOut], ["err", shownErr], ["code", shownCode], ...extra]), "spaced", true)}\n`, "utf8");
+  const whole = fallback(kept);
+  if (whole.length <= limit) return whole;
+  const metrics = kept.find(([key]) => key === "metrics")?.[1];
+  const index = metrics instanceof Map ? metrics.get("failed_step_index") : undefined;
+  const lean = kept.filter(([key]) => key !== "metrics");
+  const indexed = index === undefined ? null : fallback([...lean, ["metrics", new Map<string, Value>([["failed_step_index", index]])]]);
+  return indexed !== null && indexed.length <= limit ? indexed : fallback(lean);
 }

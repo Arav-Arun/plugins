@@ -5,21 +5,31 @@ export const TS_ONLY_FLAGS: readonly string[] = [
   "dialog_dismissed_after_failure",
   "eval_isolated_reference_error",
   "eval_main_world",
+  "find_closest_ref",
+  "guessed_syntax",
   "offscreen_handoff_rolled_back",
   "oopif_attach_refused",
+  "open_here",
   "permission_granted",
   "read_oopif_frames",
   "route_enable_undone",
+  "select_retyped",
+  "select_word_match",
   "selector_in_shadow_root",
   "setup_session_dropped",
+  "snapshot_diff",
+  "snapshot_diff_full",
   "snapshot_document_changed",
   "snapshot_oopif_frames",
+  "stale_ref_after_open",
   "tab_close_interrupted",
 ];
 
+export const TS_ONLY_COUNTS: readonly string[] = ["failed_step_index"];
+
 const FLAGS = new Set([...METRIC_FLAGS, ...TS_ONLY_FLAGS]);
 const DURATIONS = new Set(METRIC_DURATIONS);
-const COUNTS = new Set(METRIC_COUNTS);
+const COUNTS = new Set([...METRIC_COUNTS, ...TS_ONLY_COUNTS]);
 
 function roundHalfEven(value: number): bigint {
   const floor = Math.floor(value);
@@ -30,6 +40,10 @@ function roundHalfEven(value: number): bigint {
 
 export function isMetricFlag(key: string): boolean {
   return FLAGS.has(key);
+}
+
+export function isMetricCount(key: string): boolean {
+  return COUNTS.has(key);
 }
 
 export function cleanMetrics(values: Value | undefined): Map<string, Value> {

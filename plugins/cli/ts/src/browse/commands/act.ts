@@ -23,7 +23,7 @@ import type { Json } from "../state/records.ts";
 import { newTab } from "./core.ts";
 import type { Ctx } from "./ctx.ts";
 import { register } from "./index.ts";
-import { need, parse } from "./parse.ts";
+import { leadingSelector, need, parse, SELECTOR_ALIAS, SELECTOR_FLAG, withSelector } from "./parse.ts";
 
 export const APPEAR_WAIT = 3.0;
 const CHECKS_PRESENCE = new Set(["is"]);
@@ -57,7 +57,8 @@ export function consentNote(ctx: Ctx, given: Result): Result {
 }
 
 async function cmdClick(ctx: Ctx, argv: string[]): Promise<Result> {
-  const [options, args] = parse(argv, { "--new-tab": "bool", "--button": "value", "--no-humanize": "bool", "--touch": "bool" });
+  const [options, given] = parse(argv, { "--new-tab": "bool", "--button": "value", "--no-humanize": "bool", "--touch": "bool", ...SELECTOR_FLAG }, SELECTOR_ALIAS);
+  const args = withSelector(options, given, 0, 0);
   need(args, 1, "click <selector> [--new-tab]");
   const selector = args[0] as string;
   const [page, element] = await resolve(ctx, selector);
@@ -154,7 +155,7 @@ function samePair(a: unknown, b: unknown): boolean {
 }
 
 async function cmdFill(ctx: Ctx, argv: string[]): Promise<Result> {
-  const [options, args] = parse(argv, { "--no-humanize": "bool" }, {}, (positionals) => opaqueSlot("fill", positionals));
+  const [options, args] = parse(leadingSelector(argv), { "--no-humanize": "bool" }, {}, (positionals) => opaqueSlot("fill", positionals));
   need(args, 2, "fill <selector> <text>");
   const selector = args[0] as string;
   const [page, element] = await resolve(ctx, selector);
@@ -311,7 +312,7 @@ export async function selectIn(ctx: Ctx, page: Page, element: Element, selector:
     return attach(new Result({ selected: values }), report);
   }
   const where = await fieldName(page, element, selector);
-  const [picked, report] = await observe(ctx, page, () => choose(page, element, values, humanize, where));
+  const [picked, report] = await observe(ctx, page, () => choose(page, element, values, humanize, where, undefined, true));
   const text = picked.map((item) => `✓ Picked "${item.picked}"` + (plain(item.picked) !== plain(item.value) ? ` for "${item.value}"` : "")).join("\n");
   return attach(new Result({ selected: values, picked: picked.map((item) => item.picked) }, text), report);
 }

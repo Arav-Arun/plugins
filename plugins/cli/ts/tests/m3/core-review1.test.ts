@@ -21,10 +21,11 @@ import { cdpError, FakeBrowser, frameTree, LOADER, MAIN, stateWith } from "./cor
 const PYTHON = process.env["ARDIA_TEST_PYTHON"] ?? "python3";
 const CLI = new URL("../../..", import.meta.url).pathname;
 const cleanups: (() => void)[] = [];
+const registeredSnapshots = Refs.snapshots;
 
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
-  Refs.snapshots = null;
+  Refs.snapshots = registeredSnapshots;
 });
 
 function navigateTo(state: State, session: string | null, loader: string): void {
@@ -216,7 +217,7 @@ describe("4: open never navigates a borrowed tab", () => {
     expect(calls(browser, "Target.createTarget")).toBe(1);
     expect(state.current).toBe("OWN");
     expect((result.data as Record<string, unknown>)["left"]).toBe(state.tabId("TARGET"));
-    expect(result.text).toContain("since this session uses your tab");
+    expect(String(result.text).split("\n")[0]).toContain("the tab you picked with `tab active` [");
     expect(browser.sent.filter((entry) => entry.method === "Page.navigate" && entry.session === "SESSION-1")).toHaveLength(navigateBefore);
   });
 });
