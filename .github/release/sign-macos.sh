@@ -23,10 +23,12 @@ expect_mach_os=(bin/ardia bin/ardia-libc.so libexec/esbuild)
 need() {
   local missing=() name
   for name in "$@"; do [ -n "${!name:-}" ] || missing+=("$name"); done
-  [ "${#missing[@]}" = 0 ] || die "missing ${missing[*]}: the macOS command can't be signed and checked, so nothing is released"
+  [ "${#missing[@]}" = 0 ] || die "missing ${missing[*]}: the macOS command can't be signed and checked, so this build stops and the release ships the unsigned macOS build instead"
   [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die "APPLE_TEAM_ID isn't a team ID"
   [ "$(uname -s)" = Darwin ] || die "this needs macOS"
 }
+
+developer_id_g2_sha256=f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a
 
 requirement() {
   echo "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
@@ -80,14 +82,30 @@ check() {
   done
 }
 
+restore_keychains() {
+  security list-keychains -d user -s ${previous_keychains[@]+"${previous_keychains[@]}"} >/dev/null 2>&1 || true
+  security delete-keychain "$sign_keychain" >/dev/null 2>&1 || true
+  rm -rf "$sign_work"
+}
+
 sign() {
-  local folder keychain keychain_password identity signed=0 file submission status id work
+  local folder keychain keychain_password identity signed=0 file submission status id work line import_output previous_keychain_list
   folder=$(cd "$1" && pwd)
   need DEVELOPER_ID_P12_BASE64 DEVELOPER_ID_P12_PASSWORD ASC_API_KEY_P8_BASE64 ASC_API_KEY_ID ASC_API_ISSUER_ID APPLE_TEAM_ID
   [ -f "$folder/plugin.json" ] || die "$folder isn't the cli plugin folder"
   work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sign-macos.XXXXXX")
   keychain="$work/signing.keychain-db"
-  trap 'security delete-keychain "'"$keychain"'" >/dev/null 2>&1 || true; rm -rf "'"$work"'"' EXIT
+  previous_keychain_list=$(security list-keychains -d user) || die "the keychain search list couldn't be read, so it couldn't be restored after signing"
+  previous_keychains=()
+  while IFS= read -r line; do
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line#\"}
+    line=${line%\"}
+    [ -z "$line" ] || previous_keychains+=("$line")
+  done <<<"$previous_keychain_list"
+  sign_work=$work
+  sign_keychain=$keychain
+  trap restore_keychains EXIT
   keychain_password=$(openssl rand -hex 24)
   printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 --decode >"$work/identity.p12" || die "DEVELOPER_ID_P12_BASE64 isn't base64"
   printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 --decode >"$work/notary.p8" || die "ASC_API_KEY_P8_BASE64 isn't base64"
@@ -97,13 +115,20 @@ sign() {
   security unlock-keychain -p "$keychain_password" "$keychain"
   security import "$work/identity.p12" -k "$keychain" -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign >/dev/null \
     || die "the certificate couldn't be imported (is DEVELOPER_ID_P12_PASSWORD right?)"
+  curl -fsSL --proto '=https' https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$work/developer-id-g2.cer" \
+    || die "Apple's Developer ID G2 intermediate certificate couldn't be downloaded"
+  [ "$(shasum -a 256 "$work/developer-id-g2.cer" | cut -d' ' -f1)" = "$developer_id_g2_sha256" ] \
+    || die "Apple's Developer ID G2 intermediate certificate doesn't match its pinned SHA-256"
+  import_output=$(security import "$work/developer-id-g2.cer" -k "$keychain" 2>&1) \
+    || die "Apple's Developer ID G2 intermediate certificate couldn't be imported: $import_output"
   security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+  security list-keychains -d user -s "$keychain" ${previous_keychains[@]+"${previous_keychains[@]}"}
   identity=$(security find-identity -v -p codesigning "$keychain" | awk -F'"' -v team="($APPLE_TEAM_ID)" '/Developer ID Application:/ && index($2, team) { print $2; exit }')
   [ -n "$identity" ] || die "the certificate holds no Developer ID Application identity for team $APPLE_TEAM_ID"
   echo "Signing as $identity"
   while IFS= read -r -d '' file; do
-    codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$identity" "$file" >/dev/null 2>&1 \
-      || die "codesign failed on ${file#$folder/}"
+    signing_output=$(codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$identity" "$file" 2>&1) \
+      || die "codesign failed on ${file#$folder/}: $signing_output"
     signed=$((signed + 1))
   done < <(machos "$folder")
   echo "Signed $signed Mach-Os"
