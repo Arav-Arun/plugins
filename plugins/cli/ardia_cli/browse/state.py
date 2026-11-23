@@ -111,6 +111,19 @@ class State:
     def connected(self) -> bool:
         return self.browser is not None and self.browser.alive
 
+    async def resolve_off_loop(self):
+        from ardia_cli import endpoint as endpoints
+
+        sink = endpoints.SocketSink()
+        mark = endpoints.OPEN_SOCKETS.set(sink)
+        try:
+            return await asyncio.to_thread(self.resolve_endpoint)
+        except asyncio.CancelledError:
+            sink.cancel()
+            raise
+        finally:
+            endpoints.OPEN_SOCKETS.reset(mark)
+
     async def connect(self):
         if self.connected:
             return
@@ -120,7 +133,7 @@ class State:
             self.lost = True
         if self.lost:
             raise ConnectionLost()
-        endpoint = self.resolve_endpoint()
+        endpoint = await self.resolve_off_loop()
         if self.instance is not None and endpoint.instance != self.instance:
             self.restarted = True
             raise RestartedBrowser(
