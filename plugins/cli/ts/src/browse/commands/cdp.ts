@@ -6,10 +6,12 @@ import { buildParams, encodedSize, MAX_CDP_PARAMS, ParamsError, wireParams } fro
 import * as raw from "../cdp/raw.ts";
 import { parseTimeout } from "../script/timeout.ts";
 import type { Page } from "../state/page.ts";
+import type { State } from "../state/state.ts";
 import { borrowedTab } from "./borrowed.ts";
 import type { Ctx } from "./ctx.ts";
 import { register } from "./index.ts";
 import { type Flags, need, parse } from "./parse.ts";
+import { noteRawThrottle } from "../changes/throttle.ts";
 
 export const CDP_METHOD = /^[A-Z][A-Za-z0-9]*\.[a-z][A-Za-z0-9]*$/u;
 export const CDP_USAGE = "cdp <Domain.method> [--params <json>|-] [--param k=v | k:=json] [--target browser|<tab>] [--timeout 30s]";
@@ -50,6 +52,12 @@ function refuseRawOnBorrowed(ctx: Ctx, page: Page, method: string): void {
   }
 }
 
+export function liveWhile(state: State, targetId: string): () => boolean {
+  const session = raw.rawSessionOf(state, targetId);
+  const browser = state.browser;
+  return () => session !== null && browser !== null && state.browser === browser && browser.alive && raw.rawSessionOf(state, targetId) === session;
+}
+
 export async function cmdCdp(ctx: Ctx, argv: string[]): Promise<Result> {
   const [options, args] = parse(argv, CDP_FLAGS);
   need(args, 1, CDP_USAGE);
@@ -73,11 +81,13 @@ export async function cmdCdp(ctx: Ctx, argv: string[]): Promise<Result> {
       await state.refreshTargets();
       const targetId = await state.findTab(target);
       [result, session] = await state.registry.holding(state.instance, targetId, () => raw.send(state, targetId, method, params, timeout));
+      noteRawThrottle(state, targetId, method, params, liveWhile(state, targetId));
       where = state.tabId(targetId);
     } else {
       const page = await state.page();
       refuseRawOnBorrowed(ctx, page, method);
       [result, session] = await raw.send(state, page.targetId, method, params, timeout);
+      noteRawThrottle(state, page.targetId, method, params, liveWhile(state, page.targetId));
       where = state.tabId(page.targetId);
     }
   } catch (error) {

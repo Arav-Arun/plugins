@@ -4,7 +4,9 @@ import { FIELD_FACTS } from "../../src/browse/act/fields.ts";
 import { fieldTarget } from "../../src/browse/commands/batch.ts";
 import { dispatch } from "../../src/browse/commands/all.ts";
 import { Ctx } from "../../src/browse/commands/ctx.ts";
-import { BrowseError } from "../../src/browse/daemon-errors.ts";
+import { BrowseError, ConnectionLost } from "../../src/browse/daemon-errors.ts";
+import { renderPlain } from "../../src/browse/daemon/render.ts";
+import { observe } from "../../src/browse/changes/observe.ts";
 import { begin } from "../../src/browse/metrics.ts";
 import { CLICKABLES } from "../../src/browse/snapshot/collect.ts";
 import { State } from "../../src/browse/state/state.ts";
@@ -40,6 +42,13 @@ class FormBrowser {
       this.values.set(this.focused, String(params?.["text"]));
       this.counts.beforeinput += 1;
       this.counts.input += 1;
+    }
+    if (method === "Input.dispatchKeyEvent") {
+      if (params?.["type"] === "keyDown") {
+        this.counts.keydown += 1;
+        if (this.focused !== null && typeof params["text"] === "string") this.values.set(this.focused, (this.values.get(this.focused) ?? "") + params["text"]);
+      }
+      if (params?.["type"] === "keyUp") this.counts.keyup += 1;
     }
     if (method === "Input.dispatchMouseEvent") {
       if (params?.["type"] === "mousePressed") this.counts.mousedown += 1;
@@ -84,6 +93,8 @@ class FormBrowser {
     if (source === PREPARE_ACTION) return { value: { connected: true, shown: true, width: 1280, height: 800, box: true, cover: null, x: 60, y: 25, counts: { ...this.counts } } };
     if (source.includes("inputWatch") || source.includes("ardiaBrowseInputWatch")) return { value: { ...this.counts, activeFrame: false } };
     if (source.includes("ardiaBrowse.info")) return { value: { tag: "input", type: "text", editable: true, value: "", connected: true } };
+    if (source.includes("api.filterField(field)")) return { value: false };
+    if (source.includes("holdsFocus")) return { value: true };
     if (source.includes("isConnected")) return { value: true };
     if (source.includes("visibilityState")) return { value: false };
     if (source.includes("document.title")) return { value: "Form" };
@@ -163,4 +174,307 @@ describe("fieldTarget", () => {
     expect(fieldTarget(["type", "--delay", "50", "#a", "x"])).toBeNull();
     expect(fieldTarget(["click", "#go"])).toBeNull();
   });
+});
+
+class DialogBrowser extends FormBrowser {
+  opened: (() => void) | null = null;
+
+  override async send(method: string, params: Record<string, unknown> | null = null): Promise<Record<string, unknown>> {
+    if (method === "Input.dispatchMouseEvent" && params?.["type"] === "mousePressed" && this.opened !== null) {
+      this.sent.push(method);
+      this.opened();
+      this.opened = null;
+      return new Promise(() => {});
+    }
+    return super.send(method, params);
+  }
+}
+
+function dialogSetup(): { state: State; browser: DialogBrowser } {
+  const { state } = setup();
+  const browser = new DialogBrowser();
+  state.browser = browser as never;
+  browser.opened = () => {
+    const page = state.pages.get("T");
+    if (page) page.dialog = { type: "confirm", message: "Discard the draft?" };
+  };
+  return { state, browser };
+}
+
+describe("a JavaScript dialog in a batch", () => {
+  test("--bail stops at the line that opened it and runs nothing after", async () => {
+    const { state, browser } = dialogSetup();
+    const started = performance.now();
+    const { results } = await batch(state, ["--bail", "click #go", "fill #a one", "fill #b two"]);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(results.map((result) => [result.success, (result as { code?: string }).code ?? null])).toEqual([
+      [false, "dialog_blocked"],
+      [false, "not_run"],
+      [false, "not_run"],
+    ]);
+    expect((results[0] as { error?: string }).error).toContain('`click` opened a JavaScript confirm dialog saying "Discard the draft?"');
+    expect((results[1] as { error?: string }).error).toContain("a JavaScript dialog is open and --bail stops here");
+    expect(browser.count("Input.insertText")).toBe(0);
+  });
+
+  test("without --bail each later line fails fast instead of hanging on the frozen page", async () => {
+    const { state, browser } = dialogSetup();
+    const started = performance.now();
+    const { results } = await batch(state, ["click #go", "fill #a one"]);
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(results.map((result) => (result as { code?: string }).code ?? null)).toEqual(["dialog_blocked", "dialog_blocked"]);
+    expect((results[1] as { error?: string }).error).toContain("so `fill` wasn't sent");
+    expect(browser.count("Input.insertText")).toBe(0);
+  });
+});
+
+class LateDialogBrowser extends FormBrowser {
+  pressed = false;
+  late: "settle" | "eval" = "settle";
+  opened: (() => void) | null = null;
+
+  override async send(method: string, params: Record<string, unknown> | null = null, options: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+    if (method === "Input.dispatchMouseEvent" && params?.["type"] === "mousePressed") this.pressed = true;
+    const settling = this.late === "settle" && this.pressed && method === "Accessibility.getFullAXTree";
+    const evaluating = this.late === "eval" && method === "Runtime.evaluate" && String(params?.["expression"] ?? "").includes("confirm(");
+    if ((settling || evaluating) && this.opened !== null) {
+      this.sent.push(method);
+      this.opened();
+      this.opened = null;
+      return new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }
+    return super.send(method, params);
+  }
+}
+
+function lateSetup(late: "settle" | "eval"): { state: State; browser: LateDialogBrowser } {
+  const { state } = setup();
+  const browser = new LateDialogBrowser();
+  browser.late = late;
+  state.browser = browser as never;
+  browser.opened = () => {
+    const page = state.pages.get("T");
+    if (page) page.dialog = { type: "confirm", message: "Leave this page?" };
+  };
+  return { state, browser };
+}
+
+describe("a dialog after the action landed", () => {
+  test("one that opens while the page settles keeps the click's success and says it landed", async () => {
+    const { state } = lateSetup("settle");
+    const started = performance.now();
+    const { results, text } = await batch(state, ["--bail", "click #go", "fill #a one"]);
+    expect(performance.now() - started).toBeLessThan(8000);
+    expect(results[0]?.success).toBe(true);
+    expect(text).toContain("it landed, but a JavaScript confirm dialog opened afterwards and froze the page");
+    expect(text).toContain('! confirm dialog "Leave this page?" is open');
+    expect((results[1] as { code?: string }).code).toBe("not_run");
+  });
+
+  test("eval that opens a confirm fails fast with the dialog", async () => {
+    const { state } = lateSetup("eval");
+    const started = performance.now();
+    const { results } = await batch(state, ["eval confirm('Leave?')", "eval 1"]);
+    expect(performance.now() - started).toBeLessThan(8000);
+    expect(results.map((result) => (result as { code?: string }).code ?? null)).toEqual(["dialog_blocked", "dialog_blocked"]);
+    expect((results[0] as { error?: string }).error).toContain("`eval` opened a JavaScript confirm dialog");
+    expect((results[1] as { error?: string }).error).toContain("so `eval` wasn't sent");
+  });
+});
+
+class LosingBrowser extends FormBrowser {
+  override async send(method: string, params: Record<string, unknown> | null = null): Promise<Record<string, unknown>> {
+    if (method === "Input.dispatchMouseEvent" && params?.["type"] === "mousePressed") throw new ConnectionLost();
+    return super.send(method, params);
+  }
+}
+
+describe("a connection lost in a batch", () => {
+  test("keeps the transport exit status while the line says outcome_unknown", async () => {
+    const { state } = setup();
+    state.browser = new LosingBrowser() as never;
+    const result = await begin({ argv: ["batch"] }, async () => {
+      await state.page("T");
+      return dispatch(new Ctx(state, {}, "/", {}, null, "batch"), "batch", ["click #go", "fill #a one"]);
+    });
+    const rows = (result.data as { results: { code?: string }[] }).results;
+    expect(rows.map((row) => row.code ?? null)).toEqual(["outcome_unknown", "not_run"]);
+    expect(result.lost).toBeInstanceOf(ConnectionLost);
+    expect(renderPlain({}, result, null)[0]).toBe(2);
+  });
+});
+
+describe("a dialog in the settle-only path", () => {
+  test("reports the action that landed and the open dialog instead of hanging", async () => {
+    const { state } = setup();
+    const outcome = await begin({ argv: ["click"] }, async () => {
+      const page = await state.page("T");
+      const ctx = new Ctx(state, { settle_only: true }, "/", {}, null, "click");
+      const started = performance.now();
+      const run = async () => {
+        state.onPageEvent(page, "Network.requestWillBeSent", { requestId: "slow", type: "Fetch", request: { method: "POST", url: "https://form.example/save" } });
+        setTimeout(() => (page.dialog = { type: "confirm", message: "Leave?" }), 40);
+        return "clicked";
+      };
+      const [value, report] = await observe(ctx, page, run);
+      return { value, report, took: performance.now() - started };
+    });
+    expect(outcome.value).toBe("clicked");
+    expect(outcome.took).toBeLessThan(1400);
+    expect(outcome.report?.error).toBe("it landed, but a JavaScript confirm dialog opened afterwards and froze the page, so what it changed wasn't checked (it wasn't sent again)");
+    expect(outcome.report?.dialogs).toEqual([{ type: "confirm", message: "Leave?", handled: "open" }]);
+  });
+});
+
+class SetupDialogBrowser extends FormBrowser {
+  opened: (() => void) | null = null;
+
+  override async send(method: string, params: Record<string, unknown> | null = null, options: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+    if (method === "Network.enable" && this.opened !== null) {
+      this.sent.push(method);
+      this.opened();
+      this.opened = null;
+      return new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }
+    return super.send(method, params);
+  }
+}
+
+class LostUnderDialogBrowser extends FormBrowser {
+  opened: (() => void) | null = null;
+
+  override async send(method: string, params: Record<string, unknown> | null = null): Promise<Record<string, unknown>> {
+    if (method === "Input.dispatchMouseEvent" && params?.["type"] === "mousePressed") {
+      this.opened?.();
+      throw new ConnectionLost();
+    }
+    return super.send(method, params);
+  }
+}
+
+describe("review round 3: setup and bail order", () => {
+  test("a dialog that opens while the action sets up stops it before any input", async () => {
+    const { state } = setup();
+    const browser = new SetupDialogBrowser();
+    state.browser = browser as never;
+    browser.opened = () => {
+      const page = state.pages.get("T");
+      if (page) page.dialog = { type: "confirm", message: "Stay?" };
+    };
+    const started = performance.now();
+    const { results } = await batch(state, ["click #go"]);
+    expect(performance.now() - started).toBeLessThan(8000);
+    expect((results[0] as { code?: string }).code).toBe("dialog_blocked");
+    expect((results[0] as { error?: string }).error).toContain("so `click` wasn't sent");
+    expect(browser.count("Input.dispatchMouseEvent")).toBe(0);
+  });
+
+  test("a connection lost with a dialog open under --bail still exits 2", async () => {
+    const { state } = setup();
+    const browser = new LostUnderDialogBrowser();
+    state.browser = browser as never;
+    browser.opened = () => {
+      const page = state.pages.get("T");
+      if (page) page.dialog = { type: "confirm", message: "Stay?" };
+    };
+    const result = await begin({ argv: ["batch"] }, async () => {
+      await state.page("T");
+      return dispatch(new Ctx(state, {}, "/", {}, null, "batch"), "batch", ["--bail", "click #go", "fill #a one"]);
+    });
+    const rows = (result.data as { results: { code?: string; error?: string }[] }).results;
+    expect(rows.map((row) => row.code ?? null)).toEqual(["outcome_unknown", "not_run"]);
+    expect(rows[1]?.error).toBe("not run: an earlier command's outcome is unknown");
+    expect(result.lost).toBeInstanceOf(ConnectionLost);
+    expect(renderPlain({}, result, null)[0]).toBe(2);
+  });
+});
+
+class ReactionDialogBrowser extends FormBrowser {
+  opened: (() => void) | null = null;
+
+  override async send(method: string, params: Record<string, unknown> | null = null, options: { signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+    const declaration = String(params?.["functionDeclaration"] ?? "");
+    if (method === "Runtime.callFunctionOn" && declaration.includes("api.filterField(field)") && this.opened !== null) {
+      this.sent.push(method);
+      this.opened();
+      this.opened = null;
+      return new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }
+    return super.send(method, params);
+  }
+}
+
+describe("review round 4: reaction setup in the light modes", () => {
+  for (const mode of ["no_changes", "settle_only"]) {
+    test(`a dialog while the reaction watch installs under ${mode} stops the action before it runs`, async () => {
+      const { state } = setup();
+      const browser = new ReactionDialogBrowser();
+      state.browser = browser as never;
+      const outcome = await begin({ argv: ["type"] }, async () => {
+        const page = await state.page("T");
+        browser.opened = () => {
+          page.dialog = { type: "confirm", message: "Stay?" };
+        };
+        let ran = false;
+        const ctx = new Ctx(state, { [mode]: true }, "/", {}, null, "type");
+        const started = performance.now();
+        try {
+          await observe(ctx, page, async () => {
+            ran = true;
+            return 1;
+          }, [null, page.mainFrame]);
+          return { error: null as BrowseError | null, ran, took: performance.now() - started };
+        } catch (error) {
+          return { error: error as BrowseError, ran, took: performance.now() - started };
+        }
+      });
+      expect(outcome.error?.code).toBe("dialog_blocked");
+      expect(outcome.error?.message).toContain("so `type` wasn't sent");
+      expect(outcome.ran).toBe(false);
+      expect(outcome.took).toBeLessThan(5000);
+    });
+  }
+});
+
+class ReactionLostBrowser extends FormBrowser {
+  opened: (() => void) | null = null;
+
+  override async send(method: string, params: Record<string, unknown> | null = null): Promise<Record<string, unknown>> {
+    const declaration = String(params?.["functionDeclaration"] ?? "");
+    if (method === "Runtime.callFunctionOn" && declaration.includes("api.filterField(field)") && this.opened !== null) {
+      this.opened();
+      this.opened = null;
+      throw new ConnectionLost();
+    }
+    return super.send(method, params);
+  }
+}
+
+describe("review round 5: a lost connection during light-mode reaction setup", () => {
+  for (const mode of ["no_changes", "settle_only"]) {
+    test(`under ${mode} it stays a lost connection (exit 2), not a dialog refusal`, async () => {
+      const { state } = setup();
+      const browser = new ReactionLostBrowser();
+      state.browser = browser as never;
+      const outcome = await begin({ argv: ["type"] }, async () => {
+        const page = await state.page("T");
+        browser.opened = () => {
+          page.dialog = { type: "confirm", message: "Stay?" };
+        };
+        let ran = false;
+        try {
+          await observe(new Ctx(state, { [mode]: true }, "/", {}, null, "type"), page, async () => {
+            ran = true;
+            return 1;
+          }, [null, page.mainFrame]);
+          return { error: null as BrowseError | null, ran };
+        } catch (error) {
+          return { error: error as BrowseError, ran };
+        }
+      });
+      expect(outcome.error).toBeInstanceOf(ConnectionLost);
+      expect(outcome.error?.exitCode).toBe(2);
+      expect(outcome.ran).toBe(false);
+    });
+  }
 });

@@ -20,6 +20,8 @@ import { attach, beginBatch, endBatch, flushBatch, hasPendingReaction } from "..
 import type { Report } from "../changes/report.ts";
 import { parseRef } from "../state/refs.ts";
 import type { State } from "../state/state.ts";
+import { openDialog } from "../changes/dialogs.ts";
+import { mayRetry, noteReadRetry } from "../act/retry.ts";
 
 export const BATCH_DEFAULT_CAP = OUTPUT_CAP;
 const NESTED_BATCH = "batch can't run inside batch";
@@ -49,6 +51,7 @@ const NOTHING_ELSE = "→ Nothing else on the page changed yet.";
 const COMPACTED_COMMANDS = new Set(["fill", "select", "check", "uncheck", "type"]);
 const HELD_FLAGS = new Set(["--no-humanize"]);
 const PARTLY_FAILED = "\n(this report also holds what the failed line after it did before it failed)";
+export const DIALOG_BAIL = "not run: a JavaScript dialog is open and --bail stops here; answer it with `dialog accept` or `dialog dismiss`";
 const PLAIN_WORD = /^[\p{L}\p{N}_@#.:/=+,-]+$/u;
 
 function truthy(value: string): boolean {
@@ -400,6 +403,7 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
     failedStep(index, stepName(outcome.command), outcome.code);
   };
   let running = -1;
+  let lost: BrowseError | null = null;
   const observing = beginBatch(ctx.state);
   let held: { outcome: Outcome; result: Result } | null = null;
   const placeReport = (report: Report | null, partly = false) => {
@@ -465,7 +469,11 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
     const holding = !ctx.options["no_changes"] && heldLine(ctx.state, item, false) && heldLine(ctx.state, runs[index + 1], true);
     if (hasPendingReaction(ctx.state)) observing.current = null;
     observing.nextLine(holding);
-    const [result, error] = await runOne(ctx, command, lineOptions);
+    let [result, error] = await runOne(ctx, command, lineOptions);
+    if (error !== null && mayRetry(ran, error)) {
+      noteReadRetry();
+      [result, error] = await runOne(ctx, command, lineOptions);
+    }
     observing.defer = false;
     if (observing.flushed !== null) {
       placeReport(observing.flushed, observing.flushedPartly);
@@ -502,10 +510,16 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
       add("batch_lines_held");
     } else if (observing.pending !== null) placeReport(await flushBatch(ctx, observing), !outcome.success);
     settle(outcome, index);
+    if (error instanceof ConnectionLost) lost = error;
     if (error instanceof OutcomeUnknown || error instanceof ConnectionLost) {
       for (const rest of runs.slice(index + 1)) {
         outcomes.push({ command: rest, success: false, result: null, error: "not run: an earlier command's outcome is unknown", code: "not_run", text: null });
       }
+      break;
+    }
+    if (options["bail"] && (outcome.code === "dialog_blocked" || openDialog(ctx.state) !== null)) {
+      flag("batch_bailed_on_dialog", true);
+      for (const rest of runs.slice(index + 1)) outcomes.push({ command: rest, success: false, result: null, error: DIALOG_BAIL, code: "not_run", text: null });
       break;
     }
     if (!outcome.success && options["bail"]) break;
@@ -533,6 +547,7 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
   }
   for (const outcome of outcomes) delete outcome.text;
   const result = new Result({ results: outcomes }, text);
+  result.lost = lost;
   if (notices.length > 0) result.notice = notices.join("\n");
   const batchCap = ctx.options["full"] ? 0 : ctx.options["max_output"] === undefined || ctx.options["max_output"] === null ? OUTPUT_CAP : Number(ctx.options["max_output"]);
   const shown = ctx.state.pendingShown;

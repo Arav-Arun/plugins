@@ -2,7 +2,7 @@ import { formatG } from "../../pylib/format.ts";
 import { joinedWords, pyLen, reprText } from "../../pylib/str.ts";
 import { casefold } from "../../pylib/unicode.ts";
 import { sleep } from "../cdp/cancel.ts";
-import { BrowseError, CdpError } from "../daemon-errors.ts";
+import { BrowseError, CdpError, ConnectionLost } from "../daemon-errors.ts";
 import { FORMATS, normalize, SET_DIRECTLY, SET_VALUE } from "../fields.ts";
 import { inputOf } from "../input/input.ts";
 import {
@@ -21,8 +21,11 @@ import {
 import { add, flag } from "../metrics.ts";
 import { Element, type Page } from "../state/page.ts";
 import { monotonic } from "../state/wait.ts";
-import { asRecord, expectInput, poll, textInserted } from "./common.ts";
+import { asRecord, expectInput, poll, POLL, pollTimes, textInserted } from "./common.ts";
+import { checkedFrom, CHECK_STATE, HOLDS_FOCUS, matchOptions, OPTION_ROWS, type OptionRow, OVERLAY_INPUT, splitFinal } from "./choices.ts";
+import { latchSecret, type Readback, readBack, secretField } from "./readback.ts";
 import { click, scrollIntoView, targetPoint, waitEnabled } from "./pointer.ts";
+import { masked } from "../state/secrets.ts";
 
 export const SUGGESTION_TIMEOUT = 4.0;
 export const SUGGESTION_HINT_WAIT = 1.2;
@@ -33,6 +36,7 @@ export const WORDS = 2;
 export const MAX_SUGGESTIONS = 8;
 export const EDITOR_WAIT = 1.0;
 export const COMMIT_WAIT = 0.5;
+export const COMMIT_CHECKS = Math.round(COMMIT_WAIT / POLL) + 1;
 export const INSERTED_INPUT_TYPES = new Set(["text", "search", "email", "url", "tel", "number"]);
 const EMAIL = /[^\s@<>()[\],;:"']+@[^\s@<>()[\],;:"']+\.[A-Za-z]{2,}/gu;
 const NOT_EDITABLE_FACTS = `(el) => ({ role: (el.getAttribute("role") || el.tagName).toLowerCase(), name: ardiaBrowse.accessibleText(el).trim().slice(0, 60),
@@ -90,8 +94,12 @@ export async function typeInto(page: Page, element: Element, text: string, human
 export async function clearField(page: Page, element: Element, humanize: boolean): Promise<void> {
   if (!(await info(page, element))["value"]) return;
   const input = inputOf(page);
-  await expectInput(page, element.frame, () => input.gesture("clear", () => input.pressCombo("Meta+a", humanize)), { keydown: 2 }, "Select all", element);
-  await expectInput(page, element.frame, () => input.gesture("clear", () => input.pressCombo("Backspace", humanize)), { keydown: 1 }, "Backspace", element);
+  const guarded = (combo: string) => async () => {
+    await refuseMovedFocus(page, element, "");
+    await input.pressCombo(combo, humanize);
+  };
+  await expectInput(page, element.frame, () => input.gesture("clear", guarded("Meta+a")), { keydown: 2 }, "Select all", element);
+  await expectInput(page, element.frame, () => input.gesture("clear", guarded("Backspace")), { keydown: 1 }, "Backspace", element);
   const held = await editableText(page, element);
   if (held["text"]) throw new BrowseError(`Couldn't clear ${element.label}; it still holds text`);
   if (held["chrome"]) flag("fill_cleared_beside_chrome", true);
@@ -120,40 +128,75 @@ export async function notEditableMessage(page: Page, element: Element): Promise<
   return `${element.label} is a ${named}, which takes no typing; use click, select or check`;
 }
 
-export async function fill(page: Page, given: Element, text: string, humanize: boolean, guard: Guard = null, known: Record<string, unknown> | null = null): Promise<[boolean, Stored]> {
+export const OVERLAY_WAIT = 1.0;
+
+export type Filled = [boolean, Stored, (Readback | null)?];
+
+export async function overlayInput(page: Page, element: Element): Promise<Element | null> {
+  try {
+    const remote = await page.call(OVERLAY_INPUT, [element], { frame: element.frame, byValue: false, read: true });
+    return remote !== null && typeof remote === "object" ? await page.elementFrom(remote, element.frame, `the field that took focus from ${element.label}`) : null;
+  } catch (error) {
+    if (error instanceof BrowseError && !(error instanceof ConnectionLost)) return null;
+    throw error;
+  }
+}
+
+async function overlayAfterOpening(page: Page, element: Element, humanize: boolean): Promise<Element | null> {
+  if ((await comboKind(page, element)) !== "button") return null;
+  await click(page, element, humanize);
+  return poll(() => overlayInput(page, element), OVERLAY_WAIT);
+}
+
+export async function fill(page: Page, given: Element, text: string, humanize: boolean, guard: Guard = null, known: Record<string, unknown> | null = null): Promise<Filled> {
   let element = given;
   let facts = known ?? (await info(page, element));
   if (facts["disabled"]) {
     await waitEnabled(page, element);
     facts = await info(page, element);
   }
-  if (facts["tag"] === "select" && guard === null) return [false, await pickOption(page, element, text)];
+  if (facts["tag"] === "select" && guard === null) return [false, await pickOption(page, element, text), null];
+  let retargeted = false;
+  let secret = secretField(facts);
   if (!facts["editable"] || facts["disabled"]) {
     const cell = guard === null ? await cellOf(page, element) : null;
-    if (cell !== null) return [false, await fillCell(page, element, cell, text, humanize)];
-    throw new BrowseError(await notEditableMessage(page, element), null, "not_editable");
+    if (cell !== null) return [false, await fillCell(page, element, cell, text, humanize), null];
+    const opened = guard === null ? await overlayAfterOpening(page, element, humanize) : null;
+    if (opened === null) throw new BrowseError(await notEditableMessage(page, element), null, "not_editable");
+    flag("fill_followed_focus", true);
+    element = opened;
+    retargeted = true;
+    facts = await info(page, element);
+    secret ||= secretField(facts);
   }
-  if (facts["tag"] === "input" && SET_DIRECTLY.has(String(facts["type"]))) return [false, await setValue(page, element, String(facts["type"]), text)];
+  if (facts["tag"] === "input" && SET_DIRECTLY.has(String(facts["type"]))) {
+    const hidden = await latchSecret(page, element, secret);
+    return [retargeted, await setValue(page, element, String(facts["type"]), text, hidden), null];
+  }
   const loader = page.loader(element.frame);
   await focusField(page, element, facts, humanize, true);
-  let retargeted: boolean;
-  [element, retargeted] = await settleFocus(page, element, loader);
+  let replaced: boolean;
+  [element, replaced] = await settleFocus(page, element, loader);
+  const followed = await overlayInput(page, element);
+  if (followed !== null) {
+    flag("fill_followed_focus", true);
+    element = followed;
+    replaced = true;
+    facts = await info(page, element);
+    secret ||= secretField(facts);
+  }
+  retargeted = retargeted || replaced;
+  secret = await latchSecret(page, element, secret);
   await clearField(page, element, humanize);
-  const kindKnown = !retargeted && Object.hasOwn(facts, "kind");
-  if (text && insertsAtOnce(facts, humanize, guard) && (kindKnown ? facts["tag"] !== "input" || facts["kind"] === null : await plainInput(page, element, facts))) await insertText(page, element, text);
+  if (text && insertsAtOnce(facts, humanize, guard)) await insertThenFinalKey(page, element, text);
   else if (text) await typeInto(page, element, text, humanize, guard);
-  return [retargeted, null];
+  return [retargeted, null, text ? await readBack(page, element, text, secret) : null];
 }
 
 export function insertsAtOnce(facts: Record<string, unknown>, humanize: boolean, guard: Guard): boolean {
   if (humanize || guard !== null) return false;
   if (facts["tag"] === "input") return INSERTED_INPUT_TYPES.has(String(facts["type"] || "text"));
   return facts["tag"] === "textarea" || Boolean(facts["editable"]);
-}
-
-async function plainInput(page: Page, element: Element, facts: Record<string, unknown>): Promise<boolean> {
-  if (facts["tag"] !== "input") return true;
-  return (await comboKind(page, element)) === null;
 }
 
 export async function pickOption(page: Page, element: Element, text: string): Promise<string> {
@@ -238,7 +281,7 @@ async function commitCell(page: Page, editor: Element, humanize: boolean): Promi
   const editorState = async () => asRecord(await page.call(ACTIONS_CELL_EDITOR_STATE, [editor], { frame: editor.frame, read: true }));
   if (!(await editorState())["open"]) return;
   await pressKey(page, editor.frame, "Enter", humanize);
-  if (await poll(async () => ((await editorState())["open"] ? null : true), COMMIT_WAIT)) return;
+  if (await pollTimes(async () => ((await editorState())["open"] ? null : true), COMMIT_CHECKS)) return;
   const state = await editorState();
   try {
     await pressKey(page, editor.frame, "Escape", humanize);
@@ -267,13 +310,71 @@ async function fillCell(page: Page, element: Element, cell: Element, text: strin
   return { cell: name !== undefined ? joinedWords(name) : element.label, value: now, was };
 }
 
-export async function insertText(page: Page, element: Element, text: string): Promise<void> {
-  flag("fill_inserted_text", true);
+export async function refuseMovedFocus(page: Page, element: Element, typed: string): Promise<void> {
+  let held: unknown;
+  try {
+    held = await page.call(HOLDS_FOCUS, [element], { frame: element.frame, read: true });
+  } catch (error) {
+    if (!(error instanceof BrowseError) || error instanceof ConnectionLost) throw error;
+    held = false;
+  }
+  if (held === true) return;
+  flag("fill_focus_moved", true);
+  if (!typed) {
+    throw new BrowseError(
+      `Focus moved off ${element.label} before any text was sent, so nothing was typed (it would have landed in another field). ` +
+        "Snapshot to see where focus went, then fill it again",
+      { sent: 0 },
+      "focus_moved",
+    );
+  }
+  throw new BrowseError(
+    `Focus had moved off ${element.label} by the last keystroke, so that keystroke wasn't sent (it would have landed in another field). ` +
+      `The text before it was sent while ${element.label} held focus, but focus may have moved while it went in, so check what ` +
+      `${element.label} holds (get value) and where focus went (snapshot) before going on`,
+    { sent: Array.from(typed).length },
+    "focus_moved",
+  );
+}
+
+export async function insertThenFinalKey(page: Page, element: Element, text: string): Promise<void> {
+  const split = splitFinal(text);
+  if (split === null) {
+    await insertText(page, element, text, true);
+    return;
+  }
+  const [head, last] = split;
+  if (head) await insertText(page, element, head, true);
+  flag("fill_final_key", true);
   const input = inputOf(page);
+  const keyboard = input.keyboard();
+  const pressLast = async () => {
+    await refuseMovedFocus(page, element, head);
+    await keyboard.typeText(last, false);
+  };
   await expectInput(
     page,
     element.frame,
-    () => input.gesture("fill", () => page.send("Input.insertText", { text }, { inputEvent: true })),
+    () => input.gesture("fill", pressLast),
+    { keydown: 1, keyup: 1 },
+    "The last keystroke",
+    element,
+    null,
+    textInserted(page, element.frame || page.mainFrame, last),
+  );
+}
+
+export async function insertText(page: Page, element: Element, text: string, holdsFocus = false): Promise<void> {
+  flag("fill_inserted_text", true);
+  const input = inputOf(page);
+  const send = async () => {
+    if (holdsFocus) await refuseMovedFocus(page, element, "");
+    return page.send("Input.insertText", { text }, { inputEvent: true });
+  };
+  await expectInput(
+    page,
+    element.frame,
+    () => input.gesture("fill", send),
     { "beforeinput|input": 1 },
     "The text insert",
     element,
@@ -282,13 +383,15 @@ export async function insertText(page: Page, element: Element, text: string): Pr
   );
 }
 
-async function setValue(page: Page, element: Element, kind: string, text: string): Promise<string> {
+export async function setValue(page: Page, element: Element, kind: string, text: string, hidden = false): Promise<string> {
   const wanted = normalize(kind, text);
   await page.focusElement(element);
   const outcome = asRecord(await page.call(SET_VALUE, [element, wanted], { frame: element.frame }));
-  const stored = outcome["stored"];
+  const raw = outcome["stored"];
+  const stored = hidden && typeof raw === "string" ? masked(raw) : raw;
   if (!outcome["set"]) {
-    throw new BrowseError(`The ${kind} input ${element.label} refused ${reprText(wanted)} (it holds ${reprValue(stored)}); ${FORMATS[kind]}`, { value: stored }, "bad_value");
+    const asked = hidden ? masked(wanted) : wanted;
+    throw new BrowseError(`The ${kind} input ${element.label} refused ${reprText(asked)} (it holds ${reprValue(stored)}); ${FORMATS[kind]}`, { value: stored }, "bad_value");
   }
   return stored as string;
 }
@@ -304,13 +407,23 @@ export async function typeText(page: Page, given: Element, text: string, humaniz
   const loader = page.loader(given.frame);
   await focusField(page, given, facts, humanize, true);
   const [element, retargeted] = await settleFocus(page, given, loader);
-  await typeInto(page, element, text, humanize);
+  await latchSecret(page, element, secretField(facts));
+  if (text && insertsAtOnce(facts, humanize, null)) await insertThenFinalKey(page, element, text);
+  else await typeInto(page, element, text, humanize);
   return retargeted;
 }
 
-export async function setChecked(page: Page, element: Element, wanted: boolean, humanize: boolean): Promise<void> {
+export async function checkedState(page: Page, element: Element): Promise<boolean | "mixed" | null> {
+  return checkedFrom(await page.call(CHECK_STATE, [element], { frame: element.frame, read: true }));
+}
+
+export async function setChecked(page: Page, element: Element, wanted: boolean, humanize: boolean): Promise<boolean> {
   let facts = await info(page, element);
-  if (facts["checked"] === wanted) return;
+  const before = await checkedState(page, element);
+  if (before === wanted || (before === null && facts["checked"] === wanted)) {
+    flag("check_already_set", true);
+    return false;
+  }
   if (facts["disabled"]) await waitEnabled(page, element);
   let target: Element | null = element;
   try {
@@ -324,13 +437,27 @@ export async function setChecked(page: Page, element: Element, wanted: boolean, 
   await click(page, target, humanize);
   await sleep(0.05);
   facts = await info(page, element);
-  if (facts["checked"] !== wanted) throw new BrowseError(`Clicking ${element.label} didn't ${wanted ? "check" : "uncheck"} it`);
+  const after = await checkedState(page, element);
+  if ((after ?? facts["checked"]) !== wanted) throw new BrowseError(`Clicking ${element.label} didn't ${wanted ? "check" : "uncheck"} it`);
+  return true;
+}
+
+export async function optionRows(page: Page, element: Element): Promise<OptionRow[] | null> {
+  try {
+    const rows = await page.call(OPTION_ROWS, [element], { frame: element.frame, read: true });
+    return Array.isArray(rows) ? (rows as OptionRow[]) : null;
+  } catch (error) {
+    if (error instanceof BrowseError && !(error instanceof ConnectionLost)) return null;
+    throw error;
+  }
 }
 
 export async function select(page: Page, element: Element, values: string[]): Promise<unknown> {
   await waitEnabled(page, element);
+  const rows = await optionRows(page, element);
+  const chosen = rows === null ? values : matchOptions(values, rows, element.label);
   await page.focusElement(element);
-  return page.call("(el, values) => ardiaBrowse.selectOptions(el, values)", [element, values], { frame: element.frame });
+  return page.call("(el, values) => ardiaBrowse.selectOptions(el, values)", [element, chosen], { frame: element.frame });
 }
 
 export function plain(text: unknown): string {

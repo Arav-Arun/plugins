@@ -1,0 +1,128 @@
+import { BrowseError } from "../daemon-errors.ts";
+import { flag } from "../metrics.ts";
+
+export const MAX_OPTIONS_LISTED = 20;
+const NOT_A_FINAL_KEY = /^[\n\r\t\p{M}‍︎️]$/u;
+
+export function splitFinal(text: string): [string, string] | null {
+  const chars = Array.from(text);
+  const last = chars.at(-1);
+  if (last === undefined || NOT_A_FINAL_KEY.test(last)) return null;
+  return [chars.slice(0, -1).join(""), last];
+}
+
+export const POPUP_SELECTOR = "[role=listbox], [role=dialog], [role=menu], [role=combobox], [role=tree], [role=grid], [popover], dialog";
+export const OVERLAY_INPUT = `(el) => {
+  const doc = el.ownerDocument;
+  let active = doc.activeElement;
+  while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+  if (!active || active === el || active === doc.body || (el.contains && el.contains(active))) return null;
+  const tag = active.tagName;
+  const kind = (active.type || "text").toLowerCase();
+  const textual = tag === "TEXTAREA" || (tag === "INPUT" && !["checkbox", "radio", "button", "submit", "reset", "hidden", "file", "range", "color", "image"].includes(kind));
+  if (!(active.isContentEditable || textual) || active.readOnly || active.disabled) return null;
+  const words = (node, name) => ((node && node.getAttribute && node.getAttribute(name)) || "").split(/\\s+/).filter(Boolean);
+  const root = el.getRootNode();
+  const byId = (id) => (root.getElementById ? root.getElementById(id) : null) || doc.getElementById(id);
+  const owned = [...words(el, "aria-controls"), ...words(el, "aria-owns")].some((id) => {
+    const node = byId(id);
+    return !!node && (node === active || node.contains(active));
+  });
+  if (owned) return active;
+  const above = (node, selector) => (node.parentElement ? node.parentElement.closest(selector) : null);
+  const widget = above(el, "[role=combobox]");
+  if (widget && widget.contains(active)) return active;
+  const popup = above(active, "${POPUP_SELECTOR}");
+  const labelled = !!popup && !!el.id && [active, popup].some((node) => words(node, "aria-labelledby").includes(el.id));
+  return labelled ? active : null;
+}`;
+
+export const HOLDS_FOCUS = `(el) => {
+  const deepest = (doc) => {
+    let node = doc.activeElement;
+    while (node && node.shadowRoot && node.shadowRoot.activeElement) node = node.shadowRoot.activeElement;
+    return node;
+  };
+  const holdsFocus = deepest(el.ownerDocument);
+  const within = (node) => {
+    for (let at = node; at; at = at.parentNode || at.host || null) if (at === el) return true;
+    return false;
+  };
+  if (!holdsFocus || !within(holdsFocus)) return false;
+  try {
+    for (let view = el.ownerDocument.defaultView; view && view.parent && view.parent !== view; view = view.parent) {
+      const owner = view.frameElement;
+      if (!owner) break;
+      if (deepest(owner.ownerDocument) !== owner) return false;
+    }
+  } catch (error) {}
+  return true;
+}`;
+
+export const CHECK_STATE = `(el) => {
+  const tag = el.tagName;
+  if (tag === "INPUT" && (el.type === "checkbox" || el.type === "radio")) return el.indeterminate ? "mixed" : el.checked;
+  for (const name of ["aria-checked", "aria-pressed", "aria-selected"]) {
+    const value = (el.getAttribute(name) || "").toLowerCase();
+    if (value === "true") return true;
+    if (value === "false") return false;
+    if (value === "mixed") return "mixed";
+  }
+  const inner = el.querySelector && el.querySelector("input[type=checkbox], input[type=radio]");
+  if (inner) return inner.indeterminate ? "mixed" : inner.checked;
+  const control = tag === "LABEL" && el.control;
+  if (control && (control.type === "checkbox" || control.type === "radio")) return control.checked;
+  return null;
+}`;
+
+export function checkedFrom(value: unknown): boolean | "mixed" | null {
+  if (value === true || value === false || value === "mixed") return value;
+  return null;
+}
+
+export type OptionRow = { value: string; label: string; text: string; disabled?: boolean };
+
+export const OPTION_ROWS =
+  "(list) => list.tagName === 'SELECT' ? Array.from(list.options).map((o) => ({ value: o.value, label: (o.label || '').replace(/\\s+/g, ' ').trim(), text: (o.textContent || '').replace(/\\s+/g, ' ').trim(), disabled: o.disabled })) : null";
+
+function optionName(row: OptionRow): string {
+  const shown = row.label || row.text || row.value;
+  const value = row.value && row.value !== shown ? ` (value ${JSON.stringify(row.value)})` : "";
+  return `"${shown}"${value}${row.disabled ? " [disabled]" : ""}`;
+}
+
+export function listOptions(rows: readonly OptionRow[]): string {
+  const listed = rows.slice(0, MAX_OPTIONS_LISTED).map(optionName).join(", ");
+  return rows.length > MAX_OPTIONS_LISTED ? `${listed} (and ${rows.length - MAX_OPTIONS_LISTED} more)` : listed;
+}
+
+const TIERS: readonly ((row: OptionRow, value: string) => boolean)[] = [
+  (row, value) => row.value === value,
+  (row, value) => row.label === value,
+  (row, value) => row.text === value,
+];
+
+export function matchOptions(values: readonly string[], rows: readonly OptionRow[], where: string): string[] {
+  return values.map((value) => {
+    for (const tier of TIERS) {
+      const hits = rows.filter((row) => tier(row, value));
+      const distinct = [...new Set(hits.map((row) => row.value))];
+      if (distinct.length === 1) return distinct[0] as string;
+      if (distinct.length > 1) {
+        flag("select_listed_options", true);
+        throw new BrowseError(
+          `"${value}" matches ${hits.length} options of ${where}: ${listOptions(hits)}. Give the option's value to pick one`,
+          { options: hits.map((row) => ({ value: row.value, label: row.label || row.text })) },
+          "ambiguous",
+        );
+      }
+    }
+    flag("select_listed_options", true);
+    const listing = rows.length > 0 ? `. Its options: ${listOptions(rows)}` : "; it has no options";
+    throw new BrowseError(
+      `No option of ${where} matches "${value}"${listing}`,
+      { options: rows.map((row) => ({ value: row.value, label: row.label || row.text })) },
+      "no_match",
+    );
+  });
+}
