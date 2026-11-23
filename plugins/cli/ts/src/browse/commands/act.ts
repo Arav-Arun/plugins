@@ -8,7 +8,7 @@ import { shlexQuote } from "../../pylib/shlex.ts";
 import { click, hover, tap, TOUCH_OFF } from "../act/pointer.ts";
 import { drag, listAfter, listBefore } from "../act/drag.ts";
 import { choose, comboKind, fieldFacts, fill, plain, select, settledSuggestions, SUGGESTION_HINT_WAIT, setChecked, type Item, typeText, uniqueMatch, unwatchSuggestions, watchSuggestions } from "../act/fields.ts";
-import { asRecord, expectInput, mouseButton, overFrame } from "../act/common.ts";
+import { asRecord, expectInput, mouseButton, overFrame, textInserted } from "../act/common.ts";
 import { scroll, SCROLL_DEFAULT } from "../act/scroll.ts";
 import { scrollIntoView } from "../act/pointer.ts";
 import { attach, deferring, observe, type Reaction, TimedOut, within } from "../changes/observe.ts";
@@ -275,6 +275,9 @@ async function cmdKeyboard(ctx: Ctx, argv: string[]): Promise<Result> {
           () => input.gesture("keyboard inserttext", () => page.send("Input.insertText", { text }, { inputEvent: true })),
           text ? { "beforeinput|input": 1 } : {},
           "The text insert",
+          null,
+          null,
+          text ? textInserted(page, frame, text) : null,
         ),
       [null, frame],
     );
@@ -424,7 +427,7 @@ async function cmdMouse(ctx: Ctx, argv: string[]): Promise<Result> {
     const run = action === "down" ? () => mouse.down(button) : () => mouse.up(button);
     const [x, y] = mouse.position;
     const over = await overFrame(page, x, y);
-    await expectInput(page, page.mainFrame, () => input.gesture(`mouse ${action}`, run, { keepHeld: true }), over ? {} : { [action === "down" ? "mousedown" : "mouseup"]: 1 }, `The mouse ${action}`);
+    await expectInput(page, page.mainFrame, () => input.gesture(`mouse ${action}`, run, { keepHeld: true }), over ? {} : { [action === "down" ? "mousedown|pointerdown" : "mouseup|pointerup"]: 1 }, `The mouse ${action}`);
     return new Result({ [action]: true });
   }
   if (action === "wheel") {

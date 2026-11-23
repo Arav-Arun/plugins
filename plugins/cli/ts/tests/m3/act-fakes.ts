@@ -95,7 +95,7 @@ export class FakeRenderer {
       return { connected: true, width: 1280, height: 800, box: true, moved: false, animating: false, cover: null, x, y, top: [x, y], counts: { ...this.counts, activeFrame: false } };
     }
     if (fn.includes("maxTouchPoints")) return this.touch;
-    if (fn.includes("inputWatch")) return { ...this.counts, activeFrame: false };
+    if (fn.includes("inputWatch") || fn.includes("ardiaBrowseInputWatch")) return { ...this.counts, activeFrame: false };
     if (fn.includes("draggable")) return this.draggable;
     if (fn.includes("ardiaBrowse.info")) return { connected: true };
     if (fn.includes("ardiaBrowse.rect")) {
