@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>search box</title>
+<style>
+  body { font: 14px sans-serif; margin: 20px; }
+  form { display: flex; align-items: center; width: 420px; border: 1px solid #999; }
+  #q { flex: 1; border: 0; padding: 8px; }
+  #submit { width: 0; padding: 0; border: 0; opacity: 0; overflow: hidden; height: 32px; }
+  form.typed #submit { width: 60px; opacity: 1; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch span { display: inline-block; padding: 4px 10px; border: 1px solid #666; }
+  .skip { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .skip:focus { width: auto; height: auto; clip: auto; }
+  .wrap { display: contents; }
+</style>
+</head>
+<body>
+<a class="skip" href="/search-box.html#main">Skip to content</a>
+<form id="search" action="javascript:void 0">
+  <input id="q" aria-label="Search the web" autocomplete="off">
+  <button id="submit" type="submit" aria-label="Search">Go</button>
+</form>
+<label class="switch"><input type="checkbox" id="safe"><span>Safe search</span></label>
+<button class="wrap" id="more"><span style="display:inline-block;padding:4px 10px;border:1px solid #666">More options</span></button>
+<div class="combo"><span>Pick a city</span><input id="city" aria-label="City" style="width: 0; padding: 0; border: 0"></div>
+<svg width="120" height="30"><line x1="10" y1="15" x2="110" y2="15" stroke="#333" stroke-width="12" role="button" tabindex="0" aria-label="Remove connection"></line></svg>
+<span role="slider button" tabindex="0" aria-label="Volume" aria-valuenow="5" aria-valuemin="0" aria-valuemax="10" style="display: inline-block; width: 0; height: 0; overflow: hidden"></span>
+<button class="wrap" id="textonly" aria-label="Text only">Text only</button>
+<div contenteditable="true" id="notes">Notes <button id="inline" aria-label="Inline action" style="width: 0; padding: 0; border: 0; overflow: hidden"></button></div>
+<div id="dels"><button id="del1" onclick="state.deleted.push('del1')">Delete</button><button id="del0" style="width: 0; padding: 0; border: 0; overflow: hidden">Delete</button></div>
+<span role="future-role button" tabindex="0" aria-label="Future" style="display: inline-block; width: 0; height: 0; overflow: hidden"></span>
+<p id="out"></p>
+<main id="main">Results</main>
+<script>
+  globalThis.state = { deleted: [] };
+  const form = document.getElementById("search");
+  const q = document.getElementById("q");
+  q.addEventListener("input", () => form.classList.toggle("typed", q.value !== ""));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    document.getElementById("out").textContent = "searched " + q.value;
+  });
+</script>
+</body>
+</html>

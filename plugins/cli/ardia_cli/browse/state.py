@@ -479,6 +479,10 @@ class State:
             ref_id = self.ref_keys[key] = self.next_ref()
         return ref_id
 
+    def known_ref(self, page: Page, frame: str, backend: int) -> Ref | None:
+        ref_id = self.ref_keys.get((self.instance, page.target_id, frame, page.loader(frame) or "", backend))
+        return self.refs.get(ref_id) if ref_id is not None else None
+
     def snapshot_refs(self) -> list[Ref]:
         return [self.refs[ref_id] for ref_id in self.current_refs if ref_id in self.refs]
 
@@ -588,8 +592,8 @@ class State:
             raise
         except Exception:
             return None
-        same = [node.ref for node in snapshot.walk(nodes) if node.ref and node.role == ref.role and node.name == ref.name]
-        return self.refs.get(same[0]) if len(same) == 1 else None
+        same = [node.ref for node in snapshot.walk(nodes) if (node.ref or node.boxless) and node.role == ref.role and node.name == ref.name]
+        return self.refs.get(same[0]) if len(same) == 1 and same[0] else None
 
     async def locate(self, selector: str, page: Page | None = None, wait: float = 0.0):
         ref = parse_ref(selector)

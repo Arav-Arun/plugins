@@ -31,7 +31,7 @@ export type Ref = {
   context: readonly unknown[];
 };
 
-export type SnapshotNode = { ref?: string | null; role: string; name: string };
+export type SnapshotNode = { ref?: string | null; role: string; name: string; boxless?: boolean };
 
 export interface Snapshots {
   collect(state: Refs, page: Page): Promise<unknown>;
@@ -137,6 +137,11 @@ export abstract class Refs {
     return entry[1];
   }
 
+  knownRef(page: Page, frame: string, backend: number): Ref | null {
+    const entry = this.refKeys.get(JSON.stringify([this.instance, page.targetId, frame, page.loader(frame) || "", backend]));
+    return entry === undefined ? null : (this.refs.get(entry[1]) ?? null);
+  }
+
   snapshotRefs(): Ref[] {
     return this.currentRefs.filter((id) => this.refs.has(id)).map((id) => this.refs.get(id) as Ref);
   }
@@ -219,8 +224,8 @@ export abstract class Refs {
       if (error instanceof Error && error.name === "CancelledError") throw error;
       return null;
     }
-    const same = [...snapshots.walk(nodes)].filter((node) => node.ref && node.role === ref.role && node.name === ref.name).map((node) => node.ref as string);
-    return same.length === 1 ? (this.refs.get(same[0] as string) ?? null) : null;
+    const same = [...snapshots.walk(nodes)].filter((node) => (node.ref || node.boxless) && node.role === ref.role && node.name === ref.name).map((node) => node.ref ?? null);
+    return same.length === 1 && same[0] ? (this.refs.get(same[0]) ?? null) : null;
   }
 
   refsJson(): Record<string, { name: string; role: string }> {

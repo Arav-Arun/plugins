@@ -20,6 +20,59 @@ MIN_DISABLED = 3
 VALUE_FIELDS = {"Date": "date", "DateTime": "datetime-local", "InputTime": "time", "ColorWell": "color"}
 ROLE_NAMES = {"DisclosureTriangle": "button"}
 MAX_SCOPES = 20
+BOXLESS = r"""() => {
+  const found = [];
+  const shown = (node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.width >= 2 && rect.height >= 2 && (!node.checkVisibility || node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+  };
+  const boxed = (el) => [...el.getClientRects()].some((rect) => rect.width * rect.height > 1);
+  const standIn = (el) => {
+    if (el instanceof HTMLInputElement && /^(checkbox|radio)$/.test(el.type)) {
+      const labels = [...(el.labels || [])];
+      const wrapping = el.closest("label");
+      if (wrapping) labels.push(wrapping);
+      if (labels.some(shown)) return true;
+    }
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(), seen = 0; node && seen < 400; node = walker.nextNode(), seen++) {
+      if (shown(node)) return true;
+    }
+    return false;
+  };
+  const ROLES = new Set("alert alertdialog application article banner blockquote button caption cell checkbox code columnheader combobox complementary contentinfo definition deletion dialog document emphasis feed figure form generic grid gridcell group heading img insertion link list listbox listitem log main mark marquee math menu menubar menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status strong subscript superscript switch tab table tablist tabpanel term textbox time timer toolbar tooltip tree treegrid treeitem".split(" "));
+  const roleOf = (el) => (el.getAttribute("role") || "").trim().toLowerCase().split(/\s+/).find((token) => ROLES.has(token)) || "";
+  const PRESSABLE = /^(button|link|checkbox|radio|switch|tab|menuitem|menuitemcheckbox|menuitemradio|option|treeitem)$/;
+  const typed = (el) => (el.isContentEditable && !/^(A|BUTTON|SUMMARY)$/.test(el.tagName) && !PRESSABLE.test(roleOf(el))) || /^(TEXTAREA|SELECT)$/.test(el.tagName)
+    || (el.tagName === "INPUT" && !/^(button|submit|reset|image|checkbox|radio)$/.test(el.type))
+    || /^(textbox|searchbox|combobox|spinbutton|slider|listbox)$/.test(roleOf(el));
+  const skipLink = (el) => {
+    if (el.tagName !== "A" || !el.href) return false;
+    let url;
+    try { url = new URL(el.href, location.href); } catch (error) { return false; }
+    const here = new URL(location.href);
+    if (url.hash.length < 2 || url.origin + url.pathname + url.search !== here.origin + here.pathname + here.search) return false;
+    let id = url.hash.slice(1);
+    try { id = decodeURIComponent(id); } catch (error) {}
+    return !!(document.getElementById(id) || document.getElementsByName(id)[0]);
+  };
+  const judged = (el) => /^(A|BUTTON|INPUT|SUMMARY)$/.test(el.tagName) || el.hasAttribute("tabindex") || PRESSABLE.test(roleOf(el));
+  const CONTROLS = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, [role], [tabindex], [contenteditable]';
+  const visit = (root) => {
+    for (const el of root.querySelectorAll(CONTROLS)) {
+      if (found.length >= 50) return;
+      if (/^(IFRAME|FRAME|OPTION)$/.test(el.tagName) || el instanceof SVGElement || el.closest('[aria-hidden="true"], [inert]')) continue;
+      if (typed(el) || !judged(el) || skipLink(el)) continue;
+      if (el.checkVisibility && !el.checkVisibility({ checkVisibilityCSS: true }) && getComputedStyle(el).display !== "contents") continue;
+      if (!boxed(el) && !standIn(el)) found.push(el);
+    }
+    for (const host of root.querySelectorAll("*")) {
+      if (host.shadowRoot) visit(host.shadowRoot);
+    }
+  };
+  visit(document);
+  return found;
+}"""
 FIELD_VALUE = "(el) => ({ type: el.type || null, value: 'value' in el ? String(el.value) : null, required: el.required === true })"
 
 
@@ -35,6 +88,7 @@ class Node:
     hints: list | None = None
     url: str | None = None
     frame: str | None = None
+    boxless: bool = False
 
 
 def _value(item) -> str:
@@ -349,6 +403,19 @@ async def clickable_map(page, frame: str) -> dict[int, list]:
     return {element.backend_id: hints[index] for index, element in enumerate(elements) if index < len(hints or [])}
 
 
+async def boxless(page, frame: str) -> set[int]:
+    from ardia_cli.browse.errors import ConnectionLost
+
+    try:
+        remote = await page.call(BOXLESS, frame=frame, by_value=False, read=True)
+        elements = await page.elements_from(remote, frame, "control")
+    except ConnectionLost:
+        raise
+    except BrowseError:
+        return set()
+    return {element.backend_id for element in elements}
+
+
 async def link_urls(page, nodes: list[Node], frame: str):
     links = [node for node in walk(nodes) if node.role == "link" and node.backend is not None]
 
@@ -443,6 +510,7 @@ async def collect(state, page, selector=None, cursor=True) -> list[Node]:
     if cursor:
         for used in frames_used:
             clickable[used] = await clickable_map(page, used)
+    unclickable = {used: await boxless(page, used) for used in frames_used}
     for node in walk(nodes):
         hints = clickable.get(node.frame, {}).get(node.backend)
         if hints and node.role not in INTERACTIVE:
@@ -456,6 +524,10 @@ async def collect(state, page, selector=None, cursor=True) -> list[Node]:
     for node in walk(nodes):
         if node.role in REF_ROLES or node.hints:
             if node.role == "heading" and not node.name or node.backend is None:
+                continue
+            if node.role != "heading" and node.backend in unclickable.get(node.frame, ()):
+                command_metrics.flag("snapshot_boxless_skipped", True)
+                node.boxless = True
                 continue
             node.ref = state.ref_for_node(page, node.frame, node.backend)
     return nodes
@@ -478,7 +550,12 @@ def walk_in_context(nodes, context: tuple = ()):
 
 def refs_of(state, page, nodes: list[Node], whole_page: bool = True) -> list[Ref]:
     placed = [(node, context) for node, context in walk_in_context(nodes) if node.ref and node.backend is not None]
-    counts = Counter((node.role, node.name) for node, _ in placed)
+    counts = Counter((node.role, node.name) for node in walk(nodes) if (node.ref or node.boxless) and node.backend is not None)
+    if whole_page:
+        for node in walk(nodes):
+            known = state.known_ref(page, node.frame, node.backend) if node.boxless and node.backend is not None else None
+            if known is not None:
+                known.unique = counts[(node.role, node.name)] == 1
     refs = []
     for node, context in placed:
         if whole_page:

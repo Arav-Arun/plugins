@@ -1,6 +1,6 @@
 import { checkCancelled } from "../cdp/cancel.ts";
 import { BrowseError, ConnectionLost } from "../daemon-errors.ts";
-import { SNAPSHOT_FIELD_VALUE } from "../js/index.ts";
+import { SNAPSHOT_BOXLESS, SNAPSHOT_FIELD_VALUE } from "../js/index.ts";
 import { flag } from "../metrics.ts";
 import type { Element, Page } from "../state/page.ts";
 import { quiet } from "../state/page.ts";
@@ -94,6 +94,16 @@ export async function clickableMap(page: Page, frame: string): Promise<Map<numbe
     throw error;
   }
   return out;
+}
+
+export async function boxless(page: Page, frame: string): Promise<Set<number>> {
+  try {
+    const remote = await page.call(SNAPSHOT_BOXLESS, [], { frame, byValue: false, read: true });
+    return new Set((await page.elementsFrom(remote, frame, "control")).map((element) => element.backendId));
+  } catch (error) {
+    if (quiet(error)) return new Set();
+    throw error;
+  }
 }
 
 export async function linkUrls(page: Page, nodes: readonly Node[], frame: string): Promise<void> {
@@ -228,6 +238,8 @@ async function collectInto(state: State, page: Page, selector: string | null, cu
   const framesUsed = [...new Set([...walk(nodes)].map((node) => node.frame as string))];
   const clickable = new Map<string, Map<number, string[]>>();
   if (cursor) for (const used of framesUsed) clickable.set(used, await clickableMap(page, used));
+  const unclickable = new Map<string, Set<number>>();
+  for (const used of framesUsed) unclickable.set(used, await boxless(page, used));
   sameDocuments(page, loaders);
   const mainHints = page.mainFrame === null ? undefined : clickable.get(page.mainFrame);
   const mainTitle = mainHints === undefined ? undefined : frameTitles.get(mainHints);
@@ -250,6 +262,11 @@ async function collectInto(state: State, page: Page, selector: string | null, cu
   for (const node of walk(nodes)) {
     if (REF_ROLES.has(node.role) || (node.hints && node.hints.length)) {
       if ((node.role === "heading" && !node.name) || node.backend === null) continue;
+      if (node.role !== "heading" && unclickable.get(node.frame as string)?.has(node.backend)) {
+        flag("snapshot_boxless_skipped", true);
+        node.boxless = true;
+        continue;
+      }
       node.ref = state.refForNode(page, node.frame as string, node.backend);
     }
   }
@@ -261,7 +278,13 @@ export function refsOf(state: Refs, page: Page, nodes: readonly Node[], wholePag
   const placed = walkInContext(nodes).filter(([node]) => node.ref && node.backend !== null);
   const counts = new Map<string, number>();
   const keyOf = (node: Node) => JSON.stringify([node.role, node.name]);
-  for (const [node] of placed) counts.set(keyOf(node), (counts.get(keyOf(node)) ?? 0) + 1);
+  for (const node of walk(nodes)) if ((node.ref || node.boxless) && node.backend !== null) counts.set(keyOf(node), (counts.get(keyOf(node)) ?? 0) + 1);
+  if (wholePage) {
+    for (const node of walk(nodes)) {
+      const known = node.boxless && node.backend !== null ? state.knownRef(page, node.frame as string, node.backend) : null;
+      if (known !== null) known.unique = counts.get(keyOf(node)) === 1;
+    }
+  }
   return placed.map(([node, here]) => {
     let unique: boolean;
     let context: readonly unknown[];
