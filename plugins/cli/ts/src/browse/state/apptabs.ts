@@ -21,6 +21,7 @@ export type AppTabState = {
   readonly targetInfos: ReadonlyMap<string, Record<string, unknown>>;
   readonly appTabs: Map<string, string>;
   readonly appGenerations: Map<string, unknown>;
+  noteAppTabs?(paired: ReadonlyMap<string, string>, present?: ReadonlySet<string> | null): void;
 };
 
 export type AppRow = Record<string, unknown> & { id: string };
@@ -172,12 +173,12 @@ export async function appCall(state: AppTabState, method: string, params: Record
   return controlCall(file, state.caller, method, params, timeout);
 }
 
-export async function appWindows(state: AppTabState): Promise<unknown[] | null> {
+export async function appWindows(state: AppTabState, timeout = WINDOWS_TIMEOUT * 2): Promise<unknown[] | null> {
   const file = controlSocket(state);
   if (file === null) return null;
   let windows: unknown;
   try {
-    windows = await controlCall(file, state.caller, "windows", null, WINDOWS_TIMEOUT * 2);
+    windows = await controlCall(file, state.caller, "windows", null, timeout);
   } catch (error) {
     if (error instanceof ControlRefused) return null;
     throw error;
@@ -222,15 +223,18 @@ export async function whereAppHas(state: AppTabState, targetId: string): Promise
   return `Ardia has it open as ${row.id} at ${row["url"] || "no address yet"}`;
 }
 
-export async function appTabMap(state: AppTabState): Promise<Map<string, string>> {
-  const windows = await appWindows(state);
+export async function appTabMap(state: AppTabState, timeout = WINDOWS_TIMEOUT * 2): Promise<Map<string, string>> {
+  const windows = await appWindows(state, timeout);
   if (windows === null) return new Map();
-  const paired = pairByTarget(appTabRows(windows), state.targetInfos);
+  const rows = appTabRows(windows);
+  const paired = pairByTarget(rows, state.targetInfos);
   for (const [target, entry] of paired) {
     state.appTabs.set(target, entry.app);
     state.appGenerations.set(target, entry.generation);
   }
-  return new Map([...paired].map(([target, entry]) => [target, entry.app]));
+  const apps = new Map([...paired].map(([target, entry]) => [target, entry.app]));
+  state.noteAppTabs?.(apps, new Set(rows.map((row) => row.id)));
+  return apps;
 }
 
 export async function appTabTarget(state: AppTabState, appTab: string): Promise<Found> {
@@ -260,6 +264,7 @@ export async function appTabTarget(state: AppTabState, appTab: string): Promise<
   if (!state.targetInfos.has(target)) return { error: `${appTab}'s page isn't one the ardia command can drive (an Ardia page, or not a web page)`, code: "tab_not_found" };
   state.appTabs.set(target, appTab);
   state.appGenerations.set(target, tab["pageGeneration"] ?? null);
+  state.noteAppTabs?.(new Map([[target, appTab]]));
   return { target, url: tab["url"] ?? null, title: tab["title"] ?? null, generation: tab["pageGeneration"] ?? null };
 }
 

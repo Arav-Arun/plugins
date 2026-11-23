@@ -38,6 +38,7 @@ async function closeTab(ctx: Ctx, which: string | undefined): Promise<Result> {
   if (state.mustClose.has(targetId)) {
     throw new BrowseError(`Tab [${state.tabId(targetId)}] is already being closed (an earlier \`tab close\` was interrupted)`, null, "tab_closing");
   }
+  if (!state.opened.has(targetId)) await state.readoptOpenedTabs();
   if (!state.opened.has(targetId)) {
     throw new BrowseError(`Tab [${state.tabId(targetId)}] is one of the user's tabs; ardia browse only closes tabs this session opened`);
   }
@@ -47,6 +48,7 @@ async function closeTab(ctx: Ctx, which: string | undefined): Promise<Result> {
     throw new BrowseError(`Tab [${state.tabId(targetId)}] is in use by session ${named.join(", ")}, so it stays open`, null, "tab_in_use");
   }
   const tab = state.tabId(targetId);
+  const app = state.appTabs.get(targetId);
   try {
     await (state.browser as Browser).send("Target.closeTarget", { targetId });
   } catch (error) {
@@ -59,6 +61,7 @@ async function closeTab(ctx: Ctx, which: string | undefined): Promise<Result> {
     throw error;
   }
   state.registry.finishClose(state.instance, targetId);
+  state.dropRecorded(app);
   state.forgetTarget(targetId);
   return new Result({ closed: tab, targetId }, `✓ Tab [${tab}] closed`);
 }

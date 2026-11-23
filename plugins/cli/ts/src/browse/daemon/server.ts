@@ -111,7 +111,7 @@ export class Daemon {
       throw error;
     }
     this.state = new State(
-      { session: config.session, key: config.key, browseFd: this.dirFd, noAutoDialog: config.noAutoDialog, pinTab: config.pinTab, dataDir: config.dataDir, dataRoot: config.dataRoot },
+      { session: config.session, key: config.key, owner: config.owner, browseFd: this.dirFd, noAutoDialog: config.noAutoDialog, pinTab: config.pinTab, dataDir: config.dataDir, dataRoot: config.dataRoot },
       () => this.resolveEndpoint(),
     );
     bindCommandLock(this.state, this.lock);
@@ -396,7 +396,7 @@ export class Daemon {
     const recent = recentlyUsed(this.state.usedAt, now, [...this.active].map((task) => task.startedAt));
     for (const target of this.state.usedAt.keys()) if (!recent.includes(target)) this.state.usedAt.delete(target);
     const live = (target: string) => this.state.targetInfos.has(target);
-    const unmapped = recent.filter((target) => live(target) && !this.state.appTabs.has(target));
+    const unmapped = [...new Set([...recent.filter((target) => live(target) && !this.state.appTabs.has(target)), ...this.state.unrecordedCreated()])];
     if (this.state.connected && shouldScan(unmapped, this.state.usedAt, this.scannedAt, now)) {
       this.scannedAt = now;
       await appTabMap(this.state).catch(() => undefined);
@@ -632,10 +632,11 @@ export class Daemon {
   private async closeTabs(tally: { closed: number; kept: string[] }): Promise<void> {
     const state = this.state;
     const leftovers = state.instance !== null && state.registry.temporaries(state.instance).length > 0;
-    if ((state.opened.size === 0 && !leftovers) || state.lost) return;
+    if ((state.opened.size === 0 && !leftovers && !state.ownsSessionTabs()) || state.lost) return;
     try {
       await state.connect();
       await state.refreshTargets();
+      await state.pairBeforeClosing();
       await temptabs.sweep(state);
       const registry = state.registry;
       const instance = state.instance;
@@ -650,9 +651,11 @@ export class Daemon {
           state.forgetTarget(targetId);
           continue;
         }
+        const app = state.appTabs.get(targetId);
         try {
           await state.browser?.send("Target.closeTarget", { targetId });
           tally.closed += 1;
+          state.dropRecorded(app);
         } finally {
           registry.finishClose(instance, targetId);
         }

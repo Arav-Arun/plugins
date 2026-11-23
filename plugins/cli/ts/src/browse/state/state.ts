@@ -1,7 +1,8 @@
+import { spawnSync } from "node:child_process";
 import http from "node:http";
 import { formatG } from "../../pylib/format.ts";
 import { Browser } from "../cdp/browser.ts";
-import { Cancelled, currentSignal, shield, sleep, untilCancelled } from "../cdp/cancel.ts";
+import { Cancelled, currentSignal, shield, sleep, untilCancelled, withSignal } from "../cdp/cancel.ts";
 import { envelopeGone } from "../cdp/raw.ts";
 import { BrowseError, CdpError, ConnectionLost } from "../daemon-errors.ts";
 import { announce, announcePath, type Caller, sameCaller } from "../daemon/announce.ts";
@@ -9,12 +10,12 @@ import { release as releaseClaims } from "../daemon/claims.ts";
 import { type Endpoint, unreachableMessage } from "../endpoint.ts";
 import { clock, flag, spent } from "../metrics.ts";
 import { wallSeconds } from "../tokens.ts";
-import { APP_TAB, appTabError, appTabTarget } from "./apptabs.ts";
+import { APP_TAB, appTabError, appTabMap, appTabTarget } from "./apptabs.ts";
 import { detachedError, type Element, Page, quiet, WORLD_NAME } from "./page.ts";
 import * as pierce from "./pierce.ts";
 import { type Json, record } from "./records.ts";
 import { isBareRef, parseRef, Refs } from "./refs.ts";
-import { Registry } from "./registry.ts";
+import { MAX_SESSION_TABS, Registry, type SessionTab } from "./registry.ts";
 import * as temptabs from "./temptabs.ts";
 import { monotonic } from "./wait.ts";
 
@@ -28,6 +29,10 @@ export const PROBE_FANOUT = 8;
 export const PROBE_PASSES = 3;
 export const PROBE_BACKOFF = 0.25;
 export const REATTACH_TRIES = 3;
+export const PAIR_TRIES = 5;
+export const PAIR_WAIT = 1.0;
+export const CLOSE_PAIR_TIMEOUT = 2.0;
+export const TOUCH_AFTER = 3600;
 const ENDED_SESSIONS_KEPT = 64;
 
 function rememberEnded(ended: Set<string>, session: string): void {
@@ -50,6 +55,7 @@ export class RestartedBrowser extends BrowseError {
 export type StateConfig = {
   session: string;
   key: string;
+  owner?: string;
   browseFd: number | null;
   noAutoDialog: boolean;
   pinTab: boolean;
@@ -152,6 +158,15 @@ async function gate<T>(work: (() => Promise<T>)[], width: number): Promise<T[]> 
   return results;
 }
 
+export function processStart(pid: number): string {
+  try {
+    const found = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 2000, env: { ...process.env, LC_ALL: "C" } });
+    return found.status === 0 ? found.stdout.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 export class State extends Refs implements temptabs.TempTabState {
   readonly session: string;
   browser: Browser | null = null;
@@ -169,6 +184,8 @@ export class State extends Refs implements temptabs.TempTabState {
   readonly usedAt = new Map<string, number>();
   readonly appGenerations = new Map<string, unknown>();
   readonly opened = new Set<string>();
+  readonly created = new Set<string>();
+  readonly persisted = new Set<string>();
   readonly frames = new Map<string, string>();
   readonly leases = new Set<string>();
   readonly claims = new ClaimSet();
@@ -214,7 +231,7 @@ export class State extends Refs implements temptabs.TempTabState {
   ) {
     super();
     this.session = config.session;
-    this.registry = new Registry(config.browseFd, config.key, config.session);
+    this.registry = new Registry(config.browseFd, config.key, config.session, config.owner ?? config.key);
     this.autoDialog = !config.noAutoDialog;
     this.pinTab = config.pinTab;
   }
@@ -364,6 +381,8 @@ export class State extends Refs implements temptabs.TempTabState {
     page?.detach();
     const wasOpened = this.opened.has(targetId);
     this.opened.delete(targetId);
+    this.created.delete(targetId);
+    this.persisted.delete(targetId);
     this.frames.delete(targetId);
     this.targetInfos.delete(targetId);
     this.views.delete(targetId);
@@ -384,6 +403,114 @@ export class State extends Refs implements temptabs.TempTabState {
     }
     this.appTabs.delete(targetId);
     this.appGenerations.delete(targetId);
+  }
+
+  startOf: (pid: number) => string = processStart;
+  private runOf: { instance: string; run: string } | null = null;
+
+  get run(): string {
+    const instance = this.instance ?? "";
+    const pid = /^([0-9]+):/u.exec(instance);
+    if (!pid) return instance;
+    if (this.runOf?.instance === instance) return this.runOf.run;
+    const started = this.startOf(Number(pid[1]));
+    if (!started) return "";
+    this.runOf = { instance, run: `pid:${pid[1]}@${started}` };
+    return this.runOf.run;
+  }
+
+  noteAppTabs(paired: ReadonlyMap<string, string>, present: ReadonlySet<string> | null = null): void {
+    try {
+      const run = this.run;
+      const known = run !== "";
+      const owned = this.registry.sessionTabs();
+      const put = new Map<string, { run: string; target: string }>();
+      let readopted = false;
+      for (const [target, app] of paired) {
+        const entry = owned.get(app);
+        if (this.opened.has(target)) {
+          const ours = this.created.has(target) || entry?.target === target;
+          if (ours && known && (entry === undefined || entry.target !== target || entry.run !== run)) put.set(app, { run, target });
+          else if (ours && entry?.target === target) this.persisted.add(target);
+        } else if (entry !== undefined && (entry.target === target || (known && entry.run !== run))) {
+          this.opened.add(target);
+          this.created.add(target);
+          this.registry.noteOpened(this.instance, target);
+          if (known) put.set(app, { run, target });
+          else this.persisted.add(target);
+          readopted = true;
+        }
+      }
+      if (!known) {
+        if (readopted) flag("tab_readopted_after_restart", true);
+        return;
+      }
+      const stale = owned.size + put.size >= MAX_SESSION_TABS ? Number.POSITIVE_INFINITY : wallSeconds() - TOUCH_AFTER;
+      const touch = present === null ? [] : [...owned].filter(([app, entry]) => present.has(app) && !put.has(app) && entry.at < stale).map(([app]) => app);
+      this.registry.updateSessionTabs(put, [], touch);
+      for (const entry of put.values()) this.persisted.add(entry.target);
+      if (readopted) flag("tab_readopted_after_restart", true);
+    } catch {}
+  }
+
+
+  appTabOf(targetId: string): string | undefined {
+    return this.appTabs.get(targetId);
+  }
+
+  dropRecorded(app: string | undefined): void {
+    if (app === undefined) return;
+    try {
+      this.registry.updateSessionTabs(new Map(), [app]);
+    } catch {}
+  }
+
+  private recordedTabs(): Map<string, SessionTab> | null {
+    try {
+      return this.registry.sessionTabs();
+    } catch {
+      return null;
+    }
+  }
+
+  ownsSessionTabs(): boolean {
+    return (this.recordedTabs()?.size ?? 0) > 0;
+  }
+
+  recorded(targetId: string): boolean {
+    const app = this.appTabs.get(targetId);
+    return app !== undefined && this.recordedTabs()?.get(app)?.target === targetId;
+  }
+
+  pairOpenedLater(targetId: string): void {
+    withSignal(null, () => {
+      void (async () => {
+        for (let attempt = 0; attempt < PAIR_TRIES; attempt += 1) {
+          if (attempt > 0) await sleep(PAIR_WAIT);
+          if (!this.created.has(targetId) || this.endpoint === null || this.recorded(targetId)) return;
+          await appTabMap(this).catch(() => undefined);
+        }
+      })().catch(() => {});
+    });
+  }
+
+  unrecordedCreated(): string[] {
+    return [...this.created].filter((target) => this.opened.has(target) && this.targetInfos.has(target) && !this.persisted.has(target));
+  }
+
+  needsPairingBeforeClose(): boolean {
+    const owned = this.recordedTabs() ?? new Map<string, SessionTab>();
+    const liveApps = new Set([...this.appTabs].filter(([target]) => this.targetInfos.has(target)).map(([, app]) => app));
+    const unrecorded = [...this.created].some((target) => this.opened.has(target) && this.targetInfos.has(target) && owned.get(this.appTabs.get(target) ?? "")?.target !== target);
+    return unrecorded || [...owned.keys()].some((app) => !liveApps.has(app));
+  }
+
+  async pairBeforeClosing(): Promise<void> {
+    if (this.needsPairingBeforeClose()) await appTabMap(this, CLOSE_PAIR_TIMEOUT).catch(() => undefined);
+  }
+
+  async readoptOpenedTabs(): Promise<void> {
+    if (this.ownsSessionTabs()) await appTabMap(this).catch(() => undefined);
   }
 
   setOffscreen(targetId: string, offscreen: boolean): void {

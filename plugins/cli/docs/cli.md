@@ -229,6 +229,28 @@ mouse position, so a humanized path starts where the last one ended. `ardia brow
   `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`: `<key>.lock`, `<key>.sock`, `<key>.json` (session name, pid) and `<key>.log`
   (the daemon's redacted stderr). The socket is bound and connected by a relative name after `fchdir` into the
   folder, so a long data dir never hits the 104-byte `sun_path` limit.
+- Which tabs a session opened outlives its daemon and Ardia itself. DevTools target ids change on every relaunch, so
+  `session-tabs.json` (0600, under `tabs.lock`) keeps the session's opened tabs by Ardia's own tab id (`tab-…`, which
+  session restore keeps, and which Ardia never reuses), each with the page's target id and Ardia's run (its pid and
+  when that process started, from `ps`, so a relaunch that reuses the pid is still a new run, and while that time
+  can't be read there is no run: nothing is written down and only the very page already recorded is taken back, until
+  a later lookup reads it; the WebSocket path for a port), under an owner that is the session key without its build
+  stamp: the same namespace, endpoint, plugin mode and session name, so another namespace's `default` never owns them.
+  A tab is recorded within a few seconds of its creation (retried until its page is on disk, even if `open` then
+  fails), before `close` lets go of any, and whenever the daemon pairs targets with Ardia's tabs (its hold scan, `tab
+  list`, a `tab close` it would refuse). A recorded tab counts as opened by this session again when it is the same
+  page (a new daemon, or control turned off and on), or when Ardia has restarted since (`tab_readopted_after_restart`;
+  the record then names the restored page), so after a crash and restore `tab close` and `close` still close the
+  session's tabs. A page the user opens in that tab later in the same run (a pin closed and clicked again) stays the
+  user's, and only a page the session created, or the very page already recorded, is ever written down: a replacement
+  page the daemon follows into its current tab stays the session's in memory only. `close` looks Ardia's tabs up first
+  only when a live tab isn't recorded or a recorded one isn't paired, and gives that lookup 2 s of its deadline. An id
+  leaves the record only when the session closes that tab (also a close finished later, after a Ctrl-C), or takes it
+  off-screen (Ardia drops it), or after 3 days: a listing can't prove a tab is gone (Ardia leaves a parked pin out of
+  `windows` until one of its profile's windows opens again), so a tab `close` couldn't reach stays the session's for a
+  retry. Each owner keeps its newest 64 ids and the file its 32 most recent owners; a listing refreshes the ids it
+  shows (hourly, or every time near the cap), so tabs that are gone go first. A record that can't be read or written
+  never fails the command. TypeScript only.
 - The daemon holds an exclusive `flock` on `<key>.lock` for its whole life. Only with that lock held does it treat
   an existing `<key>.sock` as stale and unlink it; it binds with umask 0177 so the socket is 0600 from the start,
   records the socket's inode, and at exit unlinks it only if it's still that inode. Both ends check the other's
@@ -2531,7 +2553,8 @@ Its page core (slice D3: `browse/state/page.ts`, `state.ts`, `refs.ts`, `apptabs
   after a Ctrl-C for closing, as `set viewport` does; Python leaves it open.
 - `tab new` and `window new` with global page setup (`--enable`, `--init-script`, `--capture-console`) answer
   `unsupported` until the init-script slice lands, as `open` does.
-- Two more TypeScript-only metric flags, `tab_close_interrupted` and `dialog_dismissed_after_failure`, follow the rule
+- Three more TypeScript-only metric flags, `tab_close_interrupted`, `dialog_dismissed_after_failure` and
+  `tab_readopted_after_restart`, follow the rule
   for `offscreen_handoff_rolled_back` above.
 - The caller counts as announced to Ardia's control socket only after the handshake finished, so a cancelled one is
   tried again by the next command; Python records it before. A cancelled active-tab lookup (`tab active`) ends its HTTP

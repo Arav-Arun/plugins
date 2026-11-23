@@ -15,6 +15,10 @@ export const MAX_FILE = 8 * 1024 * 1024;
 export const FILE_BUDGET = 1024 * 1024;
 export const CLOSE_HOLD = 30.0;
 export const HOLD_MARK = "#";
+export const SESSION_TABS = "session-tabs.json";
+export const SESSION_TABS_VERSION = 2n;
+export const MAX_SESSION_TABS = 64;
+export const MAX_SESSIONS = 32;
 
 export type Instance = string | null;
 type Data = JsonObject;
@@ -77,6 +81,22 @@ function wellShaped(data: Value | undefined, instance: Instance): data is Data {
   return ["ids", "opened", "using", "closing"].every((key) => data.get(key) instanceof Map) && data.has("next");
 }
 
+function sessionTabsShaped(data: Value | undefined): data is Data {
+  if (!(data instanceof Map) || data.get("version") !== SESSION_TABS_VERSION) return false;
+  const sessions = data.get("sessions");
+  return sessions instanceof Map && [...sessions.values()].every((tabs) => tabs instanceof Map && [...tabs.values()].every((entry) => entry instanceof Map));
+}
+
+function newest<T>(entries: Iterable<[string, T]>, at: (value: T) => number, keep: number): [string, T][] {
+  return [...entries].sort((a, b) => at(b[1]) - at(a[1])).slice(0, keep);
+}
+
+function latest(tabs: Value): number {
+  return Math.max(0, ...[...map(tabs).values()].map((entry) => num(map(entry).get("at"))));
+}
+
+export type SessionTab = { run: string; target: string; at: number };
+
 export class Registry {
   readonly run: string;
   readonly instances = new Set<Instance>();
@@ -85,6 +105,7 @@ export class Registry {
     readonly browseFd: number | null,
     readonly key: string,
     readonly session: string,
+    readonly owner: string = key,
   ) {
     this.run = tokenHex(8);
   }
@@ -265,6 +286,66 @@ export class Registry {
     this.open(instance, (data) => {
       table(data, "opened").set(target, new Map<string, Value>([["key", this.key], ["session", this.session], ["at", now()]]));
     });
+  }
+
+  sessionTabs(): Map<string, SessionTab> {
+    if (this.browseFd === null) return new Map();
+    return this.withSessionTabs((sessions) => {
+      const found = new Map<string, SessionTab>();
+      for (const [app, entry] of map(sessions.get(this.owner))) {
+        const fields = map(entry);
+        found.set(app, { run: text(fields.get("run")), target: text(fields.get("target")), at: num(fields.get("at")) });
+      }
+      return found;
+    });
+  }
+
+  updateSessionTabs(put: ReadonlyMap<string, { run: string; target: string }>, drop: readonly string[], touch: readonly string[] = []): void {
+    if (this.browseFd === null || (put.size === 0 && drop.length === 0 && touch.length === 0)) return;
+    this.withSessionTabs((sessions) => {
+      const tabs = new Map(map(sessions.get(this.owner)));
+      for (const app of drop) tabs.delete(app);
+      for (const [app, entry] of put) tabs.set(app, new Map<string, Value>([["run", entry.run], ["target", entry.target], ["at", now()]]));
+      for (const app of touch) {
+        const entry = tabs.get(app);
+        if (entry instanceof Map) tabs.set(app, new Map([...entry, ["at", now()]]));
+      }
+      const kept = new Map(newest(tabs, (entry) => num(map(entry).get("at")), MAX_SESSION_TABS));
+      if (kept.size > 0) sessions.set(this.owner, kept);
+      else sessions.delete(this.owner);
+      const capped = newest(sessions, latest, MAX_SESSIONS);
+      sessions.clear();
+      for (const [session, entry] of capped) sessions.set(session, entry);
+    });
+  }
+
+  private withSessionTabs<T>(use: (sessions: JsonObject) => T): T {
+    const dir = this.browseFd as number;
+    const lock = openPrivateFile(LOCK, dir);
+    try {
+      lockWithin(lock, "The tab registry");
+      let loaded: Value | undefined;
+      try {
+        loaded = readPrivateJson(SESSION_TABS, dir, FILE_BUDGET);
+      } catch (error) {
+        if (!(error instanceof PathError)) throw error;
+        loaded = undefined;
+      }
+      const data: Data = sessionTabsShaped(loaded) ? loaded : new Map<string, Value>([["version", SESSION_TABS_VERSION], ["sessions", new Map()]]);
+      const sessions = data.get("sessions") as JsonObject;
+      const before = dumps(data, "compact");
+      const cutoff = wallSeconds() - STALE_FILE_SECONDS;
+      for (const [session, tabs] of [...sessions]) {
+        const fresh = [...map(tabs)].filter(([, entry]) => num(map(entry).get("at")) >= cutoff);
+        if (fresh.length > 0) sessions.set(session, new Map(fresh));
+        else sessions.delete(session);
+      }
+      const result = use(sessions);
+      if (dumps(data, "compact") !== before) writePrivateJson(SESSION_TABS, dir, data);
+      return result;
+    } finally {
+      closeFd(lock);
+    }
   }
 
   private temporaryRecord(): JsonObject {
