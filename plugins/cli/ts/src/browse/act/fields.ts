@@ -14,6 +14,7 @@ import {
   ACTIONS_CELL_OF,
   ACTIONS_CELL_REVEAL,
   ACTIONS_CELL_START,
+  ACTIONS_HOLDS_TEXT,
   ACTIONS_REPLACEMENT,
   ACTIONS_SETTLED_FRAMES,
 } from "../js/index.ts";
@@ -91,7 +92,13 @@ export async function clearField(page: Page, element: Element, humanize: boolean
   const input = inputOf(page);
   await expectInput(page, element.frame, () => input.gesture("clear", () => input.pressCombo("Meta+a", humanize)), { keydown: 2 }, "Select all", element);
   await expectInput(page, element.frame, () => input.gesture("clear", () => input.pressCombo("Backspace", humanize)), { keydown: 1 }, "Backspace", element);
-  if ((await info(page, element))["value"]) throw new BrowseError(`Couldn't clear ${element.label}; it still holds text`);
+  const held = await editableText(page, element);
+  if (held["text"]) throw new BrowseError(`Couldn't clear ${element.label}; it still holds text`);
+  if (held["chrome"]) flag("fill_cleared_beside_chrome", true);
+}
+
+async function editableText(page: Page, element: Element): Promise<Record<string, unknown>> {
+  return asRecord(await page.call(ACTIONS_HOLDS_TEXT, [element], { frame: element.frame }));
 }
 
 export async function notEditableMessage(page: Page, element: Element): Promise<string> {

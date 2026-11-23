@@ -15,7 +15,8 @@ READ_FLAGS = frozenset({"read_data", "read_data_shaped", "read_scrolled", "read_
 ACT_FLAGS = frozenset({"waited_for_enabled", "fill_picked_option", "fill_inserted_text", "drag_side_given", "drag_list_position",
                        "select_opened_list", "press_targeted", "consent_dismissed", "popup_dismissed", "click_recentered", "dom_click_fallback",
                        "dom_click_behind_modal", "dom_click_waited_for_modal", "input_in_inner_frame", "menu_closed_for_click", "modal_dismissed",
-                       "input_mouse_events_cancelled", "input_confirmed_by_text", "input_lost_pointer", "input_lost_keys", "input_lost_text", "input_lost_wheel", "input_lost_drag"})
+                       "input_mouse_events_cancelled", "input_confirmed_by_text", "input_lost_pointer", "input_lost_keys", "input_lost_text", "input_lost_wheel", "input_lost_drag",
+                       "fill_cleared_beside_chrome"})
 ACT_COUNTS = frozenset({"cell_edits"})
 CHANGE_FLAGS = frozenset({"change_text", "change_run_choices", "open_report", "open_moved_tab", "snapshot_disabled_folded", "snapshot_repeat_labels", "names_clipped",
                           "waited_for_reaction"})
