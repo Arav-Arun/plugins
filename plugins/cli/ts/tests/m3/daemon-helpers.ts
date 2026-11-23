@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -6,12 +6,11 @@ import { type JsonObject, type Value } from "../../src/json.ts";
 import { browseDir, closeFd, sessionKey, socketIsOurs } from "../../src/browse/paths.ts";
 import { awaitDaemon, type DaemonChoice, spawnDaemon } from "../../src/browse/daemon/spawn.ts";
 import "../libc-loaded.ts";
+export { lockHolder, staleSocket } from "../peers.ts";
 
 export const TS_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
 export const CLI_DIR = path.resolve(TS_DIR, "..");
 export const PROGRAM = process.env["ARDIA_M3_TS_PROGRAM"] ?? path.join(TS_DIR, "dist", "ardia-ts");
-export const PYTHON = process.env["ARDIA_TEST_PYTHON"] ?? "python3";
-export const PYTHON_CODE = `import sys; sys.path.insert(0, ${JSON.stringify(CLI_DIR)}); from ardia_cli.browse import daemon; daemon.main()`;
 
 export type Scratch = { root: string; data: string; browse: string; done(): void };
 
@@ -51,10 +50,6 @@ export function config(data: string, session: string, extra: Record<string, Valu
 
 export function tsChoice(): DaemonChoice {
   return { kind: "ts", program: PROGRAM };
-}
-
-export function pythonChoice(): DaemonChoice {
-  return { kind: "python", python: PYTHON, code: PYTHON_CODE };
 }
 
 export function connectTo(file: string): Promise<net.Socket | null> {
@@ -145,23 +140,6 @@ export async function until(check: () => boolean, timeoutMs: number, stepMs = 50
     await new Promise((resolve) => setTimeout(resolve, stepMs));
   }
   return check();
-}
-
-export async function lockHolder(file: string): Promise<{ release(): void }> {
-  const child = spawn(PYTHON, ["-c", "import fcntl,os,sys; fd=os.open(sys.argv[1], os.O_RDWR|os.O_CREAT, 0o600); fcntl.flock(fd, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()", file], {
-    stdio: ["pipe", "pipe", "inherit"],
-  });
-  await new Promise<void>((resolve) => child.stdout?.once("data", () => resolve()));
-  return {
-    release: () => {
-      child.stdin?.end();
-      child.kill();
-    },
-  };
-}
-
-export function staleSocket(file: string): void {
-  spawnSync(PYTHON, ["-c", "import socket,sys,os; os.umask(0o177); s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()", file]);
 }
 
 export async function sessionMeta(data: string, key: string, timeoutMs = 5000): Promise<Record<string, unknown>> {
