@@ -734,6 +734,25 @@ export class Page {
   onChildEvent(session: string, method: string, params: Json): void {
     if (FRAME_EVENTS.has(method)) this.framesChanged();
     oopif.childEvent(this, session, method, params);
+    this.runtimeContextEvent(session, method, params);
+    if (method === "Runtime.bindingCalled") this.state.onPageEvent(this, method, params, session);
+  }
+
+  ownWorld(session: string | null | undefined, context: unknown): boolean {
+    if (typeof context !== "number" || typeof session !== "string") return false;
+    return [...this.worlds].some(([frame, world]) => world[1] === context && this.sessionFor(frame) === session);
+  }
+
+  forgetWorlds(session: string | null, context: number | null = null): void {
+    for (const [frame, world] of [...this.worlds]) {
+      if (this.sessionFor(frame) !== session) continue;
+      if (context === null || world[1] === context) this.worlds.delete(frame);
+    }
+  }
+
+  private runtimeContextEvent(session: string | null, method: string, params: Json): void {
+    if (method === "Runtime.executionContextsCleared") this.forgetWorlds(session);
+    else if (method === "Runtime.executionContextDestroyed" && typeof params["executionContextId"] === "number") this.forgetWorlds(session, params["executionContextId"]);
   }
 
   onEvent(method: string, params: Json): void {
@@ -792,6 +811,7 @@ export class Page {
     } else if (method.startsWith("Network.") && this.networkOn) {
       this.network.onEvent(method, params);
     }
-    this.state.onPageEvent(this, method, params);
+    this.runtimeContextEvent(this.session, method, params);
+    this.state.onPageEvent(this, method, params, this.session);
   }
 }

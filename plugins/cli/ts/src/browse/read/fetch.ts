@@ -8,6 +8,8 @@ import { BrowseError } from "../daemon-errors.ts";
 import { Result } from "../daemon/render.ts";
 import { normalizeUrl } from "../commands/parse.ts";
 import { decode } from "./charset.ts";
+import { type FastResult, fastRead, type Probe } from "./fastpath.ts";
+import { type HopGuard, UnsafeAddress } from "./netguard.ts";
 import { textFromBytes } from "./pdftext.ts";
 import { extractHtml, llmsCandidates, llmsHrefs, llmsLinks, MARKDOWN_TYPES, MAX_BODY, postProcess, sameDocument } from "./readurl.ts";
 
@@ -151,7 +153,7 @@ export function requestUrl(url: string): string {
   }
 }
 
-export async function fetchUrl(url: string, timeout: number, accept = ACCEPT, binary: BinaryMode = "refuse"): Promise<Fetched> {
+export async function fetchUrl(url: string, timeout: number, accept = ACCEPT, binary: BinaryMode = "refuse", guard: HopGuard | null = null): Promise<Fetched> {
   const parts = urlsplit(url);
   if (parts.scheme !== "http" && parts.scheme !== "https") throw new BrowseError(`read fetches http(s) URLs only, not ${url}`);
   const requested = requestUrl(url);
@@ -173,13 +175,17 @@ export async function fetchUrl(url: string, timeout: number, accept = ACCEPT, bi
       let target = requested;
       let landed = url;
       for (let hop = 0; ; hop += 1) {
+        const pinned = guard === null ? null : await untilCancelled(guard.check(target));
+        if (guard !== null && pinned === null) throw new UnsafeAddress(target);
         response = await untilCancelled(
-          fetch(target, {
-            headers: { Accept: accept, "User-Agent": USER_AGENT },
-            redirect: "manual",
-            signal: controller.signal,
-            ...(ca ? { tls: { ca } } : {}),
-          } as RequestInit),
+          guard !== null && pinned !== null
+            ? guard.request(pinned, { headers: { Accept: accept, "User-Agent": USER_AGENT }, signal: controller.signal, ca })
+            : fetch(target, {
+                headers: { Accept: accept, "User-Agent": USER_AGENT },
+                redirect: "manual",
+                signal: controller.signal,
+                ...(ca ? { tls: { ca } } : {}),
+              } as RequestInit),
         );
         const location = response.headers.get("location");
         if (![301, 302, 303, 307, 308].includes(response.status) || !location || hop >= REDIRECTS) break;
@@ -204,6 +210,7 @@ export async function fetchUrl(url: string, timeout: number, accept = ACCEPT, bi
       body = await readBody(response, MAX_BODY + 1, arm);
       Object.defineProperty(response, "finalUrl", { value: landed });
     } catch (error) {
+      if (error instanceof UnsafeAddress) throw error;
       if (error instanceof Cancelled || controller.signal.reason instanceof Cancelled) throw new Cancelled();
       if (controller.signal.reason instanceof FetchTimeout) throw new BrowseError(`Couldn't fetch ${url}: timed out`);
       throw new BrowseError(`Couldn't fetch ${url}: ${reasonOf(error)}`);
@@ -240,9 +247,9 @@ export async function fetchUrl(url: string, timeout: number, accept = ACCEPT, bi
   }
 }
 
-export async function nearestLlms(url: string, timeout: number, name = "llms.txt"): Promise<[string | null, string | null]> {
+export async function nearestLlms(url: string, timeout: number, name = "llms.txt", guard: HopGuard | null = null): Promise<[string | null, string | null]> {
   for (const candidate of llmsCandidates(url, name)) {
-    const [status, , text, final] = await fetchUrl(candidate, timeout, "text/plain, text/markdown", "skip");
+    const [status, , text, final] = await fetchUrl(candidate, timeout, "text/plain, text/markdown", "skip", guard);
     if (status === 200 && text && !text.slice(0, 500).toLowerCase().includes("<html")) return [final, text];
   }
   return [null, null];
@@ -252,20 +259,41 @@ function rstripSlash(text: string): string {
   return text.replace(/\/+$/u, "");
 }
 
-export async function run(given: string, options: ReadOptions, globalOptions: ReadOptions): Promise<Result> {
+export function fastResult(url: string, found: FastResult): Result {
+  const note = `[read via ${found.method} from ${found.source}]`;
+  return new Result(
+    { content: found.content, contentType: found.contentType, finalUrl: found.finalUrl, method: found.method, source: found.source, title: found.title, tried: found.tried, truncated: false, url },
+    found.content ? `${found.content}\n${note}` : note,
+    true,
+  );
+}
+
+export async function run(given: string, options: ReadOptions, globalOptions: ReadOptions, guard: HopGuard | null = null): Promise<Result> {
   const url = normalizeUrl(given);
   const timeout = Number(options["timeout"] || 10000) / 1000;
   const filter = (options["filter"] as string | undefined) ?? null;
+  if (options["fast"]) {
+    const probe: Probe = { tried: [], binary: null, guard: null };
+    const found = await fastRead(url, timeout, fetchUrl, { outline: options["outline"], filter }, true, probe);
+    if (found !== null) return fastResult(url, found);
+    if (probe.binary === null) throw new BrowseError(`Couldn't read ${url}: it sent no Markdown, llms.txt, ard.json or HTML`, null, "navigation_failed");
+    const { fast, ...plain } = options;
+    const read = await run(given, plain, globalOptions, probe.guard);
+    const data = read.data as Record<string, unknown>;
+    data["method"] = "raw";
+    data["tried"] = [...probe.tried, "raw"];
+    return read;
+  }
   if (options["llms"]) {
     const mode = options["llms"];
     if (mode !== "index" && mode !== "full") throw new BrowseError("--llms takes index or full");
-    const [source, text] = await nearestLlms(url, timeout, mode === "index" ? "llms.txt" : "llms-full.txt");
+    const [source, text] = await nearestLlms(url, timeout, mode === "index" ? "llms.txt" : "llms-full.txt", guard);
     if (text === null || source === null) throw new BrowseError(`No ${mode === "index" ? "llms.txt" : "llms-full.txt"} found at or above ${url}`);
     const content = mode === "index" ? llmsLinks(text, source, filter).join("\n") : postProcess(text, { outline: options["outline"], filter });
     return new Result({ content, source, contentType: "text/plain", url }, content, true);
   }
   const saving = Boolean(globalOptions["out_body"]);
-  let [status, kind, text, final, binary] = await fetchUrl(url, timeout, ACCEPT, saving ? "keep" : "refuse");
+  let [status, kind, text, final, binary] = await fetchUrl(url, timeout, ACCEPT, saving ? "keep" : "refuse", guard);
   if (status >= 400) throw new BrowseError(`${url} answered HTTP ${status}`);
   if (binary !== undefined) {
     if (options["require_md"]) throw new BrowseError(`${url} didn't answer with text/markdown (got ${kind})`);
@@ -276,18 +304,18 @@ export async function run(given: string, options: ReadOptions, globalOptions: Re
   let source = "response";
   if (!MARKDOWN_TYPES.includes(kind) && !options["raw"]) {
     if (!urlsplit(final).path.endsWith(".md")) {
-      const [mdStatus, mdKind, mdText, mdFinal] = await fetchUrl(`${rstripSlash(final)}.md`, timeout, ACCEPT, "skip");
+      const [mdStatus, mdKind, mdText, mdFinal] = await fetchUrl(`${rstripSlash(final)}.md`, timeout, ACCEPT, "skip", guard);
       if (mdStatus === 200 && mdText && (MARKDOWN_TYPES.includes(mdKind) || (mdKind === "text/plain" && mdText && !mdText.slice(0, 300).toLowerCase().includes("<html")))) {
         [status, kind, text, final, source] = [mdStatus, "text/markdown", mdText, mdFinal, "md-suffix"];
       }
     }
     if (!MARKDOWN_TYPES.includes(kind)) {
-      const [llmsSource, llmsText] = await nearestLlms(final, timeout);
+      const [llmsSource, llmsText] = await nearestLlms(final, timeout, "llms.txt", guard);
       if (llmsText && llmsSource) {
         for (const href of llmsHrefs(llmsText)) {
           const target = urljoin(llmsSource, href);
           if (sameDocument(target, final)) {
-            const [mdStatus, , mdText, mdFinal, mdBinary] = await fetchUrl(target, timeout, ACCEPT, "skip");
+            const [mdStatus, , mdText, mdFinal, mdBinary] = await fetchUrl(target, timeout, ACCEPT, "skip", guard);
             if (mdStatus === 200 && mdBinary === undefined && mdText) [status, kind, text, final, source] = [mdStatus, "text/markdown", mdText, mdFinal, "llms.txt"];
             break;
           }
