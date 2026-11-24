@@ -5,6 +5,9 @@ import type { Element, Page } from "./page.ts";
 export const NAVIGATED_REFS_KEPT = 4000;
 export const OPEN_REPLACED_KEPT = 16;
 export const OPEN_TITLE_SHOWN = 80;
+export const SHOWN_MATCHES = 6;
+
+export type Redrawn = { unique: Ref | null; followable: Ref | null; same: string[]; sameRole: string[] };
 
 export type OpenReplaced = { target: string; documents: Set<string>; from: string; to: string };
 
@@ -29,6 +32,7 @@ export type Ref = {
   name: string;
   unique: boolean;
   context: readonly unknown[];
+  scope?: string;
   epoch?: number;
 };
 
@@ -50,6 +54,17 @@ export interface Snapshots {
 type RefKey = [string | null, string, string, string, number];
 
 const REF_ID = /^(?:f[0-9]+)?e[0-9]+$/u;
+
+export function sameScope(old: Ref, fresh: Ref): boolean {
+  return (
+    old.unique &&
+    fresh.target === old.target &&
+    fresh.frame === old.frame &&
+    fresh.loader === old.loader &&
+    (fresh.scope ?? "[]") === (old.scope ?? "[]") &&
+    JSON.stringify(fresh.context) === JSON.stringify(old.context)
+  );
+}
 
 export function isRefId(text: string): boolean {
   return REF_ID.test(text);
@@ -198,9 +213,13 @@ export abstract class Refs {
     return this.currentRefs.filter((id) => this.refs.has(id)).map((id) => this.refs.get(id) as Ref);
   }
 
-  addRef(page: Page, element: Element, role = "", name = ""): string {
+  addRef(page: Page, element: Element, role?: string, name?: string): string {
     const id = this.refForNode(page, element.frame, element.backendId);
-    const known = this.refs.get(id);
+    const found = this.refs.get(id);
+    const nextRole = role === undefined ? (found?.role ?? "") : role;
+    const nextName = name === undefined ? (found?.name ?? "") : name;
+    const verified = found !== undefined && found.role === nextRole && found.name === nextName && found.loader === (page.loader(element.frame) || "");
+    const known = verified ? found : undefined;
     this.refs.set(id, {
       id,
       instance: this.instance,
@@ -209,11 +228,12 @@ export abstract class Refs {
       loader: page.loader(element.frame) || "",
       generation: this.generation,
       backend: element.backendId,
-      role: role || (known?.role ?? ""),
-      name: name || (known?.name ?? ""),
+      role: nextRole,
+      name: nextName,
       unique: Boolean(known?.unique),
       context: known?.context ?? [],
-      ...(known?.epoch !== undefined ? { epoch: known.epoch } : {}),
+      ...(known?.scope !== undefined ? { scope: known.scope } : {}),
+      ...(found?.epoch !== undefined ? { epoch: found.epoch } : {}),
     });
     return id;
   }
@@ -245,12 +265,20 @@ export abstract class Refs {
     if (element === null) gone = "the element is no longer in the page";
     else if (!(await page.call("(el) => el.isConnected", [element], { frame: ref.frame }))) gone = "the element was removed from the page";
     else return [page, element];
-    const successor = await this.redrawn(page, ref);
+    const found = await this.redrawnAll(page, ref);
+    const successor = found.unique;
     if (successor === null) {
       const code = this.elementCode(ref);
-      throw new StaleRef(refId, code === SUPERSEDED ? `${gone}, and the page has nothing in common with that snapshot any more` : gone, null, code);
+      const missing = new StaleRef(refId, code === SUPERSEDED ? `${gone}, and the page has nothing in common with that snapshot any more` : gone, null, code);
+      const named = found.same.filter((id) => this.refs.has(id));
+      missing.ambiguous = named.length > 1;
+      missing.matches = (named.length > 1 ? named : code === SUPERSEDED ? [] : found.sameRole.filter((id) => this.refs.has(id))).slice(0, SHOWN_MATCHES);
+      throw missing;
     }
-    throw new StaleRef(refId, `${gone}; the page redrew it, and the same ${ref.role} "${ref.name}" is now @${successor.id}`);
+    const redrawn = new StaleRef(refId, `${gone}; the page redrew it, and the same ${ref.role} "${ref.name}" is now @${successor.id}`);
+    redrawn.successor = found.followable === null ? null : found.followable.id;
+    if (found.followable === null) redrawn.matches = [successor.id];
+    throw redrawn;
   }
 
   async afterNavigation(old: Ref): Promise<string> {
@@ -260,7 +288,7 @@ export abstract class Refs {
     flag("stale_ref_after_navigation", true);
     let successor: Ref | null;
     try {
-      successor = await this.redrawn(page, old);
+      successor = (await this.redrawnAll(page, old)).unique;
     } catch (error) {
       if (error instanceof ConnectionLost || !(error instanceof BrowseError)) throw error;
       successor = null;
@@ -270,8 +298,13 @@ export abstract class Refs {
   }
 
   async redrawn(page: Page, ref: Ref): Promise<Ref | null> {
+    return (await this.redrawnAll(page, ref)).unique;
+  }
+
+  async redrawnAll(page: Page, ref: Ref): Promise<Redrawn> {
+    const none: Redrawn = { unique: null, followable: null, same: [], sameRole: [] };
     const snapshots = Refs.snapshots;
-    if (!ref.role || !ref.name || snapshots === null) return null;
+    if (!ref.role || !ref.name || snapshots === null) return none;
     let nodes: unknown;
     try {
       nodes = await snapshots.collect(this, page);
@@ -279,10 +312,14 @@ export abstract class Refs {
     } catch (error) {
       if (error instanceof ConnectionLost) throw error;
       if (error instanceof Error && error.name === "CancelledError") throw error;
-      return null;
+      return none;
     }
-    const same = [...snapshots.walk(nodes)].filter((node) => (node.ref || node.boxless) && node.role === ref.role && node.name === ref.name).map((node) => node.ref ?? null);
-    return same.length === 1 && same[0] ? (this.refs.get(same[0]) ?? null) : null;
+    const walked = [...snapshots.walk(nodes)];
+    const same = walked.filter((node) => (node.ref || node.boxless) && node.role === ref.role && node.name === ref.name).map((node) => node.ref ?? null);
+    const sameRole = walked.filter((node) => node.ref && node.role === ref.role && node.name).map((node) => node.ref as string);
+    const unique = same.length === 1 && same[0] ? (this.refs.get(same[0]) ?? null) : null;
+    const followable = unique !== null && sameScope(ref, unique) && (page.loader(ref.frame) || "") === ref.loader ? unique : null;
+    return { unique, followable, same: same.filter((id): id is string => id !== null), sameRole };
   }
 
   refsJson(): Record<string, { name: string; role: string }> {

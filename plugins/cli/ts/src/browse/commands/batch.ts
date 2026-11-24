@@ -6,8 +6,9 @@ import { groupThousands } from "../../pylib/format.ts";
 import { pyLen, splitlines } from "../../pylib/str.ts";
 import { shlexSplit } from "../../pylib/shlex.ts";
 import { codeLine } from "./batch-line.ts";
+import { opaqueSlot } from "../opaque.ts";
 import { redact, redactJson } from "../../redact.ts";
-import { BrowseError, ConnectionLost, OutcomeUnknown, Usage } from "../daemon-errors.ts";
+import { BrowseError, ConnectionLost, OutcomeUnknown, StaleRef, Usage } from "../daemon-errors.ts";
 import type { JsonObject } from "../../json.ts";
 import { OUTPUT_CAP, pyValue, Result } from "../daemon/render.ts";
 import { content, savedBodyLine } from "../outfile.ts";
@@ -233,7 +234,122 @@ function saveBatchLine(ctx: Ctx, name: string, result: Result, target: string): 
   return [`✓ Saved to ${saved} (${groupThousands(String(pyLen(text)))} characters): ${summary}`, true];
 }
 
-type Outcome = { command: unknown; success: boolean; result: unknown; error: string | null; code?: string | null; text?: string | null; remedy?: string };
+type Outcome = { command: unknown; success: boolean; result: unknown; error: string | null; code?: string | null; text?: string | null; remedy?: string; healed?: string[]; matches?: string[] };
+
+const MAX_HEALS = 4;
+const NOT_FOLLOWED = "it wasn't the only one with its role and name, or the new one is in another frame, dialog or container, so check it before using it";
+const SELECTOR_PREFIX = "--selector=";
+const SELECTOR_FLAGS = new Set(["-s", "--selector"]);
+export const VALUE_FLAGS_TAKEN: ReadonlySet<string> = new Set([
+  "--baseline", "--block", "--body", "--button", "--capability", "--categories", "--column", "--concurrency", "--condition", "--content", "--content-type",
+  "--credential-provider", "--curl", "--delay", "--depth", "--description", "--domain", "--duration", "--enable", "--expires", "--field",
+  "--fields", "--filter", "--fixture", "--fn", "--format", "--from", "--headers", "--idle", "--init-script", "--item", "--kind", "--label", "--limit",
+  "--links", "--llms", "--load", "--match", "--max-chars", "--method", "--name", "--nth", "--origin", "--out", "--output", "--param", "--params",
+  "--password", "--password-selector", "--patch", "--path", "--payload", "--port", "--prefix", "--property", "--resource-type", "--role",
+  "--save", "--scope", "--screenshot-dir", "--screenshot-format", "--screenshot-quality", "--site", "--state", "--status", "--step",   "--submit-selector", "--tags", "--target", "--text", "--threshold", "--timeout", "--to", "--trace", "--type", "--url", "--username",
+  "--username-selector", "--wait-until", "--where", "--with-screenshot",
+]);
+export const SHORT_VALUE_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  snapshot: ["-d"],
+  diff: ["-b", "-d", "-o", "-t"],
+  wait: ["-t", "-u", "-l", "-f"],
+};
+
+function takesValue(command: string, word: string): boolean {
+  return VALUE_FLAGS_TAKEN.has(word) || (SHORT_VALUE_FLAGS[command] ?? []).includes(word);
+}
+
+const SELECTOR_AT: Readonly<Record<string, readonly number[]>> = {
+  click: [0], dblclick: [0], hover: [0], focus: [0], fill: [0], type: [0], check: [0], uncheck: [0], select: [0], drag: [0, 1], upload: [0],
+  download: [0], scrollintoview: [0], wait: [0], highlight: [0], screenshot: [0], styles: [0], frame: [0], get: [1], is: [1],
+};
+
+function refForms(stale: string, fresh: string): [string, string][] {
+  return [[`@${stale}`, `@${fresh}`], [`ref=${stale}`, `ref=${fresh}`], [`[ref=${stale}]`, `[ref=${fresh}]`], [stale, fresh]];
+}
+
+function fillRebound(command: readonly string[], swapped: (word: string) => string | null): string[] | null {
+  for (let index = 1; index < command.length; index += 1) {
+    const word = command[index] as string;
+    if (word === "--") return null;
+    if (SELECTOR_FLAGS.has(word)) return replacedAt(command, index + 1, swapped);
+    if (word.startsWith(SELECTOR_PREFIX)) {
+      const value = swapped(word.slice(SELECTOR_PREFIX.length));
+      return value === null ? null : command.map((item, at) => (at === index ? `${SELECTOR_PREFIX}${value}` : item));
+    }
+    if (word.startsWith("-") && word.length > 1) continue;
+    return replacedAt(command, index, swapped);
+  }
+  return null;
+}
+
+function replacedAt(command: readonly string[], index: number, swapped: (word: string) => string | null): string[] | null {
+  const word = command[index];
+  const value = word === undefined || word === "--" ? null : swapped(word);
+  return value === null ? null : command.map((item, at) => (at === index ? value : item));
+}
+
+export function rebound(command: readonly string[], stale: string, fresh: string): string[] | null {
+  const name = command.length > 0 ? (ALIASES[command[0] as string] ?? (command[0] as string)) : "";
+  const forms = refForms(stale, fresh);
+  const swapped = (word: string): string | null => forms.find(([from]) => from === word)?.[1] ?? null;
+  if (name === "fill") return fillRebound(command, swapped);
+  const positions = new Set(SELECTOR_AT[name] ?? []);
+  const positionals: number[] = [];
+  let lastFlag: { index: number; inline: boolean } | null = null;
+  for (let index = 1; index < command.length; index += 1) {
+    const word = command[index] as string;
+    if (word === "--") break;
+    if (opaqueSlot(name, positionals.map((at) => command[at] as string))) {
+      positionals.push(index);
+      continue;
+    }
+    if (SELECTOR_FLAGS.has(word)) {
+      const next = command[index + 1];
+      if (next !== undefined && next !== "--") lastFlag = { index: index + 1, inline: false };
+      index += 1;
+      continue;
+    }
+    if (word.startsWith(SELECTOR_PREFIX)) {
+      lastFlag = { index, inline: true };
+      continue;
+    }
+    if (takesValue(name, word)) {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-") && word.length > 1) continue;
+    positionals.push(index);
+  }
+  if (lastFlag !== null) {
+    if (!lastFlag.inline) return replacedAt(command, lastFlag.index, swapped);
+    const value = swapped((command[lastFlag.index] as string).slice(SELECTOR_PREFIX.length));
+    const at = lastFlag.index;
+    return value === null ? null : command.map((item, position) => (position === at ? `${SELECTOR_PREFIX}${value}` : item));
+  }
+  if (name === "press" && positionals.length >= 2) positions.add(0);
+  const out = [...command];
+  let changed = false;
+  for (const slot of positions) {
+    const index = positionals[slot];
+    if (index === undefined) continue;
+    const value = swapped(command[index] as string);
+    if (value === null) continue;
+    out[index] = value;
+    changed = true;
+  }
+  return changed ? out : null;
+}
+
+function staleMatches(state: State, error: StaleRef): string {
+  const listed = error.matches.map((id) => {
+    const ref = state.refs.get(id);
+    return ref === undefined ? `[ref=${id}]` : `${ref.role}${ref.name ? ` "${ref.name}"` : ""} [ref=${id}]`;
+  });
+  if (error.ambiguous) return `→ ${listed.length} match it now, so nothing was picked: ${listed.join(", ")}`;
+  if (error.text.includes(" is now @")) return `→ not followed for you: ${NOT_FOLLOWED}; on the page now: ${listed.join(", ")}`;
+  return `→ on the page now: ${listed.join(", ")}`;
+}
 
 export function failureMeta(outcome: Outcome): { code: string | undefined; remedy: string | undefined } {
   const code = inferredCode(outcome.code ?? undefined, outcome.error ?? "");
@@ -506,6 +622,16 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
       noteReadRetry();
       [result, error] = await runOne(ctx, command, lineOptions);
     }
+    const heals: string[] = [];
+    while (error instanceof StaleRef && error.successor !== null && heals.length < MAX_HEALS) {
+      const swapped = rebound(command, error.staleRef, error.successor);
+      if (swapped === null) break;
+      heals.push(`↻ @${error.staleRef}→@${error.successor}`);
+      command = swapped;
+      add("batch_refs_healed");
+      flag("batch_ref_healed", true);
+      [result, error] = await runOne(ctx, command, lineOptions);
+    }
     observing.defer = false;
     if (observing.flushed !== null) {
       placeReport(observing.flushed, observing.flushedPartly);
@@ -523,6 +649,16 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
     };
     if (error !== null && error.code) outcome.code = error.code;
     if (result?.notice && outcome.text?.endsWith(result.notice)) outcome.text = outcome.text.slice(0, outcome.text.length - result.notice.length).replace(/\n$/u, "");
+    if (heals.length > 0) {
+      outcome.healed = heals.map((heal) => heal.slice(2));
+      if (outcome.success) outcome.text = `${heals.join("\n")}\n${outcome.text || "✓ Done"}`;
+    }
+    if (error instanceof StaleRef && error.successor === null && error.matches.length > 0) {
+      if (error.text.includes(" is now @")) flag("batch_ref_not_followed", true);
+      outcome.matches = [...error.matches];
+      outcome.text = `${failureLine(outcome)}\n${staleMatches(ctx.state, error)}`;
+      flag(error.ambiguous ? "batch_ref_ambiguous" : "batch_ref_missing", true);
+    }
     let wrote = false;
     if (saving && outcome.success && result) {
       [outcome.text, wrote] = saveBatchLine(ctx, name, result, saving);

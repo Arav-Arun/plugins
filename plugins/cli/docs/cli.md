@@ -199,8 +199,14 @@ JSON (a script's result) valid JSON.
 command or after it: `ardia --port 9222 browse snapshot` and `ardia browse --port 9222 snapshot` are the same, and so
 are `ardia --json windows`, `ardia windows --json` and `ardia hooks --data-dir DIR list`. `ts/src/argv.ts` moves the ones in
 front of (or between) the command words to just after them, so a flag written after the command wins over the same
-flag before it; arguments after `on`'s `--` are never touched. A command that doesn't take a flag given before it
-says so and exits 2 (`ardia: windows doesn't take --port`). For `browse` the flags go to the front of browse's own
+flag before it; arguments after `on`'s `--` are never touched. `--port` and `--session` steer only `ardia browse` and `ardia notes`,
+so every other command takes them anywhere on the line, before or after its words, and ignores them: `ardia tabs
+--port 9371` and `ardia methods --port 9371` run as `ardia tabs` and `ardia methods` do, where they used to exit 2
+(agents put the browse session's `--port` on every call). `scripts` keeps every `--port` and reads it itself, a flag
+right before `--` is left alone, nothing after `--` is touched, and `ardia --session s browse …` hands the session to
+browse (`ts/src/endpoint-flags.ts`, before any routing; nothing changes for a plugin's `ARDIA_BROWSE_FOR_PLUGIN` run). A
+dropped `--port` still counts as a test endpoint for telemetry, so nothing is sent. A command that doesn't take another flag given before it says so and exits 2
+(`ardia: windows doesn't take --timeout`). For `browse` the flags go to the front of browse's own
 arguments, where its parser reads them; `browse` takes `--port`, `--ws`, `--data-dir` and `--json`, not `--timeout`.
 
 Each has an environment variable, and a flag wins over it: `ARDIA_PORT`, `ARDIA_WS`, `ARDIA_DATA_DIR`. The
@@ -684,6 +690,13 @@ token or other credentials, however it was chosen (the token path, `--ws`, `$ARD
 plain `--port`/`--ws` URL. After `frame <iframe>`, if that iframe goes away, commands fail with `frame_gone` until
 `frame main` or another `frame`, instead of falling back to the main document.
 
+`here` is `tab active` and `snapshot -i` in one call (`ts/src/browse/commands/here.ts`): it picks the user's tab the same
+way, so the session borrows it with every rule above, prints its title and address, then what can be acted on, and
+`here --read` prints the page's text (as `read`) instead. Tasks on the user's own page start with it: the skill's Start
+block leads with `ardia browse here`, where it used to be `batch "tab active" "snapshot -i"`, a line agents shortened
+to a bare `snapshot -i` and lost a call to `no_session_tab`. Telemetry: `here`, `here_read`; watch `error_code`
+`no_session_tab`, which it should lower.
+
 ### Snapshots
 
 A repeated `snapshot -i` of the same document prints only what changed since the last one this
@@ -742,6 +755,13 @@ controls whose ref wasn't in it, and text, headings, images, cells and rows that
 `StaticText "Row"` is new when two were there), each as `+ <line> (in <container path>)` under one line that says
 how many. Earlier refs stay valid. The baseline is the whole tree even when the last snapshot was `-i`. With no
 earlier snapshot, or after the main document changed, it prints the whole snapshot after a line saying so.
+
+Without `--full`, a snapshot also leaves out what only repeats its neighbours (`compactTree`'s lean pass in
+`ts/src/browse/snapshot/compact.ts`): a `LabelText` or bare text whose words are a control's name next to it (`- LabelText
+/ - StaticText "Email"` before `textbox "Email"`), a text child that repeats its control's value (`textbox "Notes": hi`
+over `StaticText "hi"`), and the nameless `MenuListPopup` and `rowgroup` wrappers, whose options and rows move up a
+level. Every control and ref stays; `-i` is unchanged. A shop page with a nine-field form went from 55 lines to 43.
+Telemetry: `snapshot_lean_trimmed` and `snapshot_lean_lines` (lines left out).
 
 #### What a snapshot leaves out, and how it fits the cap
 
@@ -1076,6 +1096,47 @@ stopped: `[2 of 200 rows match "staples"; scrolled to the end of the list]`. A h
 hidden, so the page may not have drawn every row: ardia browse tab t3 --show, then read again`. The inbox of the expenses fixture (200
 mails, 40 a page) reads in about 3 s, and its 2,682-row grid in about 16 s.
 
+### Form fields and repeated items
+
+`form [<sel>] [--all]` (`ts/src/browse/commands/extract.ts`) lists every visible field, or every one inside `<sel>`: inputs
+(not hidden, submit, button, reset or image), selects, textareas, editable elements and the checkbox, radio, switch,
+combobox, textbox, searchbox, spinbutton, slider and listbox roles, up to 200, in page order, one line each:
+
+```
+form: 7 fields, 1 required, 1 required and empty, 1 invalid
+- textbox "Full name" [required, invalid: Please fill out this field., ref=e11]: (empty)
+- textbox "Email" [type=email, ref=e12]: a@b.c
+- radio "Free" [checked=true, group=plan, ref=e14]
+- combobox "Country" [ref=e16]: Mexico (of 2)
+```
+
+The label is the first of its `aria-label`, `aria-labelledby` text, `<label>`s, placeholder, title, name and id; the
+invalid message is the browser's `validationMessage`, or the `aria-errormessage`/`aria-describedby` text of an
+`aria-invalid` field. A checkbox or radio whose box is hidden behind a visible label counts as visible. Values that
+`snapshot` masks (passwords, card numbers, one-time codes, by type, autocomplete in any case and name) show as `••••`,
+and so does any field this session already knew was secret, even after the page turned it into a text field; a secret
+field's validation message prints only as `invalid`, since a page can put the value in it. The page walk stops at 200
+fields or 5,000 candidates, and a field inside another field is skipped without comparing every pair; past 200 the first
+line says so (`; more past the first 200: narrow with -s <selector>`, `--json`: `more` and `stopped`), and so does a walk
+that hit the 5,000-candidate limit, even when it kept no field (`stopped after 5,000 candidates`). A widget role wrapped around a
+native field (`<div role="combobox"><input>`) lists the input, which holds the value (a button-type input inside doesn't
+count), and a control inside a disabled
+`fieldset` counts as disabled (`:disabled`). Each line's
+ref is a real ref (`addRef`, followed across redraws like a snapshot's), so `fill @e11 …` works next. Telemetry:
+`form`, `form_fields`.
+
+`query <sel> [--fields k=<sel>,…] [--field k=<sel>] [--limit n] [--all]` reads every visible match of `<sel>` as one
+row in one page call, instead of an `eval` loop: each field is a selector inside the match (its text, or a form
+field's value), `@attr` reads an attribute (`href` and `src` resolved), and a key without a selector (`url=@href`) reads
+the match itself. With no fields, a `table` gives one row per body row keyed by its header cells, a `tr` its cells,
+and anything else `text` and its first `link`. Rows print as JSON lines under `3 rows for .card:` (`--json`: `rows`,
+`count`, `more`); 50 by default, at most 500. The page walk stops at the first match past the limit (`1 rows for .m, and
+more match`), so `--limit 1` over 20,000 matches checks two; a row keeps at most 30 columns (and `--fields` takes at
+most 30), repeated headers get ` 2`, ` 3`, never a key already taken (`Price, Price 2, Price` reads `Price`, `Price 2`, `Price 3`), so
+no cell is lost, a table's hidden rows are skipped like other hidden
+matches, and every value, links included, is cut at 300 characters. Telemetry: `query`, `query_fields`,
+`query_rows`.
+
 ### Forms agents guess
 
 The CLI also takes the forms agents typed in the bench and got `Unknown …` for, each costing a turn:
@@ -1091,6 +1152,14 @@ The CLI also takes the forms agents typed in the bench and got `Unknown …` for
   `--out`, `--links`, `--timeout` and a second pattern are usage errors (use `read --links … --list` for those).
 - `find role … --nth <n>` picks match n of several (from 0, like `find nth`) instead of failing as ambiguous, and an
   ambiguous `find role` error mentions it; `--nth` on another locator is a usage error pointing at `find nth`.
+- `find <locator> <value> is checked|unchecked|disabled|enabled|visible|hidden|editable|required` prints `true` or
+  `false` for the found element (`--json`: `state` and the value), where `is` used to fail with `Unknown action 'is'`;
+  `is hidden` is `true` when nothing matches. `is <state> <sel>` takes the same states. Telemetry: `find_is`.
+- `fill`, `select`, `check` and `uncheck` take a field's label as the selector: when the text isn't a ref and matches no
+  element right away (or isn't valid CSS), the field labelled with it (exact, then partial), else the one with that
+  placeholder or `name`, is used (text shaped like CSS, `input[name=email]`, `div.field`, `form > input`, never falls back); when none has it either, the usual wait runs, then the error says no field has that
+  label and points at `form`. `fill "Full name" "Ana Ruiz"` and `check "Accept terms"` work. Telemetry:
+  `field_label_fallback`.
 
 A `find role … --name` that matches nothing now leads with the closest name and its ref, `closest: button "Archived · 1"
 @e700`, before the list of names, so the next command can use the ref (`--json`: `data.closest` with `ref` and
@@ -1125,6 +1194,32 @@ error and the report so far goes on the line before it. Lines with `--no-changes
 can be the last line: it ends the session once every other line ran and succeeded (else it reports `not_run` and the
 session stays); anywhere else the error points at `tab close`. For a loop the page has to run itself, `eval`
 takes JavaScript (`eval --stdin` from a heredoc) and runs it in the page's main world.
+
+A line whose ref went stale because an earlier line redrew the page runs again on the new element when the stale-ref
+check can follow it, and its answer starts with `↻ @e14→@e352` (`--json`: `healed`); a line follows up to four such
+redraws. It follows only when the old ref was the only one with its role and name in its snapshot and the new one is
+still the only one, in the same frame, the same dialog instance (the same dialog element, not one that closed and
+another with the same name opened) and the same named containers (`sameScope` in `ts/src/browse/state/refs.ts`), so a
+`Delete` removed with its dialog never turns into the page's own `Delete` behind it or one in a reopened dialog. A ref
+another command hands out (`form`, `find`) or renames keeps that verified uniqueness and scope only while its role, name
+and document stay the same (a name cleared to empty counts as a change); otherwise it starts unverified and is never
+followed. When a single command's error names a successor (`is now @e352`) that fails those checks, the batch line fails and
+says `→ not followed for you: …; on the page now: …` (telemetry `batch_ref_not_followed`). The rebinding replaces the ref only at the
+command's selector, read as the command's own parser reads it: the last `-s`/`--selector` value when there is one
+(`scroll down 300 -s @e14`, `click -s '#a' -s @e14`), else its selector arguments (`click`'s first, `drag`'s two, `get
+text`'s second), skipping the values of every flag that takes one (`--delay`, `-b`/`--baseline`, …: `VALUE_FLAGS_TAKEN` and
+`SHORT_VALUE_FLAGS`, which a test keeps in step with the commands' parsers); `fill` takes only a leading `-s`, so the
+words after it stay text. Never in text or values to type, never after `--`. When none or several match, the line fails as before and lists the refs on the page now, so no extra
+snapshot is needed: `→ 2 match it now, so nothing was picked: button "Delete" [ref=e30], button "Delete" [ref=e31]`, or
+`→ on the page now:` with up to six of the same role (`--json`: `matches`). Telemetry: `batch_ref_healed`,
+`batch_refs_healed` (lines rebound), `batch_ref_ambiguous`, `batch_ref_missing`; watch `error_code` `stale_ref` on
+`batch`, which they should lower.
+
+`--help` or `-h` on a batch line (or in a script's `browse()` call) prints that command's help as the line's answer,
+exit 0, where the daemon used to fail it as an unknown flag. It counts as help only as the first argument, or right
+after the subcommand of a command that takes one (`network requests --help`, `dialog status --help`; the list is
+`TAKES_SUBCOMMAND` in `ts/src/browse/commands/index.ts`); anywhere else it is a value (`open https://example.test --help`,
+`find role button --name --help`, `cookies set name --help`). Telemetry: `help_in_daemon`.
 
 Filling a form five times is one call:
 
@@ -1161,6 +1256,12 @@ confine itself on macOS refuses the script. Each script gets a fresh runner; the
 waiting (killed after 5 idle minutes), so a script starts without a tab or a page load. A script past its
 `--timeout`, one using more than 1 GB (polled every 200 ms: `proc_pid_rusage` on macOS, `/proc` on Linux) and one
 interrupted are killed with SIGKILL; `state` survives each, since the runner sends it as it goes.
+
+When a script fails, the error names the line and the call (`✗ line 3: Element not found: #go (in call 3, \`click\`)`) and
+then lists the calls it made, in order, with their lines and whether each worked: `calls before it stopped (2 of 3 ok):
+line 1 click ✓ · line 2 get ✓ · line 3 click ✗`, the last 12 when there were more (`--json`: `data.steps`, each with
+`call`, `command`, `line` and `ok`). It used to say only the failing line, so an agent re-ran the whole script to learn
+what had already happened. Telemetry: `script_steps_shown`.
 
 Each `page.*` call is a browse command on the session, served straight from the IPC message (no controller tab and no
 CDP hop per call). Read-only calls (`get`, `is`, `read`, `page.evaluate`, `page.$eval`, `page.$$eval`,
@@ -1445,6 +1546,27 @@ link-local, site-local, CGNAT, ULA and metadata addresses are refused). A refusa
 `unsafe_address` rather than counting as a miss, and a binary page read the usual way keeps the same rules. A directory
 URL's sibling is `<dir>/index.md`. A binary first answer (a PDF) is read the usual way. On the session's tab each
 probe has 4 s, the tab's own text is the fallback, and `tried` lists every step.
+
+### Reading many pages from the tab
+
+`read-urls <url> [url…] [--concurrency n] [--timeout s] [--max-chars n]` (`ts/src/browse/commands/read-urls.ts`)
+fetches up to 50 addresses at once from inside the session's tab (the user's active tab, picked as `tab active`, when
+the session has none, and it says so), with `fetch(url, { credentials: "include" })` in the isolated world, so the
+requests carry the tab's cookies and logins and the tab never navigates. Six run at a time (`--concurrency`, a whole
+number, at most 10), each with 15 s (`--timeout`, at most 60) and at most 2 MB of body, 8 MB in all (each chunk is cut to what is left of both right after it arrives, before decoding, so streams read at once
+never share one allowance). The whole
+run has one limit, the per-address timeout times the rounds the queue needs, at most 75 s, kept under the page call's
+own deadline: at that limit every request still running is aborted, the queue stops, and the answer keeps what
+finished, with `stopped at the … limit` or `not fetched` on the rest (telemetry `read_urls_deadline`). One address's
+text, title included (a title stops at 300 characters, or at `--max-chars` when that is smaller), is cut at 200,000 characters even with `--full` or `--json`. HTML becomes text with Markdown headings
+(scripts, styles, menus and footers left out, the title line moved into the header); text, JSON and Markdown print
+as they are; a binary body is skipped with the `read --http … --out` that saves it. Each address gets an equal share
+of the output cap (`--max-chars` sets it, `--full` lifts it) under `## [n] <title> — <url> (<status>, <type>)`, and
+says where it was cut. A failure is one `✗` line and the rest still print: an HTTP error (with the start of its
+body), a timeout, or a fetch the page's origin may not make (another site without CORS, or a network failure),
+which points at `read <url>`. Relative addresses resolve against the tab; only http and https are fetched. The whole
+answer is page content, so it is neutralized and goes inside the untrusted-content markers like `read`. It fails
+(exit 1) only when every address failed. Telemetry: `read_urls`, `read_urls_count`, `read_urls_failed`.
 
 ### Commands that need Ardia 0.2.49 or later
 
@@ -3416,8 +3538,11 @@ the `js/*` recordings:
   LaunchAgent, an `ARDIA_FEEDBACK_URL` with a line break, and an environment path or working directory that isn't valid
   UTF-8 (Python reads those with surrogateescape). Under `ARDIA_BROWSE_FOR_PLUGIN` the same shapes are refused with
   `plugin_refused`.
-- `plugins check` on a manifest 2 runs Ardia's own manifest checker, vendored unchanged from ardia's
-  `apps/browser/src/lib` into `ts/src/app-manifest`, after the schema, plus the manifest-only app rules driven by the
+- `plugins check` (and `plugins install`) on a manifest 2 runs Ardia's own manifest checker, vendored from ardia main's
+  `apps/browser/src/lib` into `ts/src/app-manifest` with `.ts` on its relative imports, a few helpers exported for the
+  CLI (and `networkLabel`), and `packages/core/src/idn.ts` beside it for `urlParts.ts`'s `@ardia/core` import; it reads
+  `permissions.state` (state events and tab intents) and the `siteSwitches` and `pageBar` contributions as the app does,
+  after the schema, plus the manifest-only app rules driven by the
   schema's `x-ardia-rules` (approved settings, hooks that need tabs) and `contributes.settings.defaults` against
   config.schema.json. Python checks a manifest 2 only against the schema and two rules (main or sidecar, not both;
   activationEvents only go with a main), so it can call ok a manifest Ardia refuses. Neither side checks what depends on
