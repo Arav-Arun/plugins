@@ -5,6 +5,7 @@ import { waitUntil } from "../state/wait.ts";
 import { type Ctx } from "./ctx.ts";
 import { register } from "./index.ts";
 import { need, parse } from "./parse.ts";
+import { borrowedAhead, borrowedDepth, borrowedStepAllowed, historyFrom, noteBorrowedStep } from "./borrowed.ts";
 
 export function borrowedTab(ctx: Ctx): string | null {
   const state = ctx.state;
@@ -30,29 +31,44 @@ function entryUrl(entry: unknown): unknown {
 
 export async function cmdHistory(ctx: Ctx, _argv: string[]): Promise<Result> {
   const page = await ctx.state.page();
-  refuseOnBorrowed(ctx, page, `go ${ctx.command} in`);
+  const step = ctx.command === "back" ? -1 : 1;
+  const borrowed = borrowedTab(ctx) === page.targetId ? page.targetId : null;
+  const ours = borrowed !== null && (step < 0 ? borrowedDepth(ctx.state, borrowed) > 0 : borrowedAhead(ctx.state, borrowed) > 0);
+  if (!ours) refuseOnBorrowed(ctx, page, `go ${ctx.command} in`);
   const history = await page.send("Page.getNavigationHistory");
   const index = typeof history["currentIndex"] === "number" ? history["currentIndex"] : 0;
   const entries = Array.isArray(history["entries"]) ? history["entries"] : [];
-  const step = ctx.command === "back" ? -1 : 1;
+  let trailBefore: ReturnType<typeof historyFrom> | null = null;
+  if (borrowed !== null) {
+    trailBefore = historyFrom(history);
+    if (!borrowedStepAllowed(ctx.state, borrowed, step, trailBefore) || !(0 <= index + step && index + step < entries.length)) refuseOnBorrowed(ctx, page, `go ${ctx.command} in`);
+  }
   if (!(0 <= index + step && index + step < entries.length) || (index + step === 0 && entryUrl(entries[0]) === "about:blank" && ctx.state.opened.has(page.targetId))) {
     return new Result({ url: page.url }, page.url);
   }
   const before = page.navigations;
   const beforeUrl = page.url;
-  await page.call(`() => { history.go(${step}); return true; }`, [], { frame: page.mainFrame });
-  const moved = async (): Promise<boolean> => {
-    if (page.navigations !== before) {
-      try {
-        return Boolean(await page.call("() => document.readyState === 'complete'", [], { frame: page.mainFrame, read: true }));
-      } catch (error) {
-        if (error instanceof ConnectionLost || !(error instanceof BrowseError)) throw error;
-        return false;
+  try {
+    await page.call(`() => { history.go(${step}); return true; }`, [], { frame: page.mainFrame });
+    const moved = async (): Promise<boolean> => {
+      if (page.navigations !== before) {
+        try {
+          return Boolean(await page.call("() => document.readyState === 'complete'", [], { frame: page.mainFrame, read: true }));
+        } catch (error) {
+          if (error instanceof ConnectionLost || !(error instanceof BrowseError)) throw error;
+          return false;
+        }
       }
+      return page.url !== beforeUrl;
+    };
+    await waitUntil(moved, ctx.timeout, 0.05, "the history navigation");
+  } catch (error) {
+    if (borrowed !== null && trailBefore !== null && (page.navigations !== before || page.url !== beforeUrl)) {
+      noteBorrowedStep(ctx.state, borrowed, step, trailBefore);
     }
-    return page.url !== beforeUrl;
-  };
-  await waitUntil(moved, ctx.timeout, 0.05, "the history navigation");
+    throw error;
+  }
+  if (borrowed !== null && trailBefore !== null) noteBorrowedStep(ctx.state, borrowed, step, trailBefore);
   await page.refreshFrames();
   return new Result({ url: page.url }, page.url);
 }

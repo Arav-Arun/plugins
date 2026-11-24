@@ -15,6 +15,7 @@ import { afterSameDocument, beforeNavigating } from "../read/settle.ts";
 import { arrival, attach, settled } from "../changes/observe.ts";
 import { type Ctx } from "./ctx.ts";
 import { register } from "./index.ts";
+import { OPEN_FLAGS, openTarget, tracksBorrowedNav } from "./borrowed.ts";
 import { cmdRead } from "./read-page.ts";
 import { type Flags, need, normalizeUrl, type Parsed, parse } from "./parse.ts";
 import { applyOpenOptions, takeOpenOptions } from "./setup.ts";
@@ -431,16 +432,6 @@ function knownTitle(state: Ctx["state"], page: Page): string {
 export const OPEN_HERE_WITHOUT_URL = "open --here takes the URL to load in the tab you picked with `tab active`";
 export const OPEN_HERE_SETUP = "open --here doesn't add init scripts or devtools to the tab you picked with `tab active`; drop --enable and --init-script";
 export const OPEN_HERE_OFFSCREEN = "open --here --show would take the tab you picked out of its off-screen viewport; drop --show";
-const OPEN_FLAGS: Flags = {
-  "--enable": "multi",
-  "--init-script": "multi",
-  "--capture-console": "bool",
-  "--headers": "value",
-  "--label": "value",
-  "--show": "bool",
-  "--read": "bool",
-  "--here": "bool",
-};
 
 export async function cmdOpen(ctx: Ctx, argv: string[]): Promise<Result> {
   const [options, args] = parse(argv, OPEN_FLAGS);
@@ -567,5 +558,5 @@ export async function cmdSession(ctx: Ctx, argv: string[]): Promise<Result> {
   return new Result({ session: state.session }, state.session);
 }
 
-register("open", cmdOpen);
+register("open", tracksBorrowedNav(cmdOpen, openTarget));
 register("session", cmdSession);
