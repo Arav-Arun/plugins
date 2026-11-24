@@ -100,7 +100,7 @@ def harness_env(opts, home, browser, workdir):
 
 
 def agent_env(opts, home, browser, workdir, extra=None):
-    env = ardia_side.agent_env({"cli": "installed"}, extra)
+    env = ardia_side.agent_env({"cli": "installed", **ardia_side.route_opts(opts)}, extra)
     env = {k: v for k, v in env.items() if not k.startswith(STRIPPED_ENV_PREFIXES)}
     keep = [p for p in env["PATH"].split(":") if p and Path(p) not in (ardia_side.DEV_BIN, ardia_side.INSTALLED_ARDIA.parent)]
     env["PATH"] = ":".join([str(bin_dir(opts))] + keep)
@@ -222,9 +222,7 @@ def run(task_id, agent, run_id, results_dir, overrides=None, contender=None, on_
         write_json(state_path(opts), state)
         tab = browsers.open_only_tab(browsers.endpoint_of(browser), task["start_url"])
         workdir = make_workdir(opts, run_id)
-        codex_home = home / "codex-home"
-        codex_home.mkdir(parents=True, exist_ok=True)
-        env = agent_env(opts, home, browser, workdir, {"HOME": str(codex_home), "CODEX_HOME": str(Path.home() / ".codex")})
+        env = agent_env(opts, home, browser, workdir, ardia_side.codex_env(home / "codex-home"))
         warm = warm_daemon(env, workdir)
         setup_s = round(time.monotonic() - t0, 2)
         prompt = SYSTEM_PROMPT.format(shots=workdir / "shots", task=task["prompt"])

@@ -80,7 +80,7 @@ def harness_env(opts):
 
 
 def agent_env(opts, extra=None):
-    env = ardia_side.agent_env({"cli": "installed"}, extra)
+    env = ardia_side.agent_env({"cli": "installed", **ardia_side.route_opts(opts)}, extra)
     env = {k: v for k, v in env.items() if not k.startswith(STRIPPED_ENV_PREFIXES)}
     keep = [p for p in env["PATH"].split(":") if p and Path(p) not in (ardia_side.DEV_BIN, ardia_side.INSTALLED_ARDIA.parent)]
     env["PATH"] = ":".join([str(lane_dir(opts) / "bin"), opts["bin"]] + keep)
@@ -233,9 +233,7 @@ def run(task_id, agent, run_id, results_dir, overrides=None, contender=None, on_
         reach = (opts.get("reach_line") or "").format(session=opts["session"])
         prompt = f"{task['prompt']}\n\n{reach}" if reach else task["prompt"]
         if agent == "codex":
-            codex_home = home / "codex-home"
-            codex_home.mkdir(parents=True, exist_ok=True)
-            env = agent_env(opts, {"HOME": str(codex_home), "CODEX_HOME": str(Path.home() / ".codex")})
+            env = agent_env(opts, ardia_side.codex_env(home / "codex-home"))
             cmd = ardia_side.codex_command(model, effort, workdir, prompt)
         else:
             env = agent_env(opts)
