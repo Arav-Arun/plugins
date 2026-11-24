@@ -403,7 +403,59 @@ function quoteWord(word: string): string {
   return PLAIN_WORD.test(word) ? word : JSON.stringify(word).replace(/[\u007f-￿]/gu, (char) => char);
 }
 
-function compactBatchLines(outcomes: Outcome[]): void {
+const PASS_THROUGH_INSPECT = new Set(["wait", "read", "snapshot", "form", "links", "query"]);
+const FIELD_DIFF_LINE = /^[+~] \s*(textbox|combobox|checkbox|radio|spinbutton|slider|listbox|switch|searchbox)\b/u;
+
+export function trimSupersededChanges(text: string, hasRead: boolean, hasSnapshot: boolean, hasForm: boolean): string {
+  const lines = text.split("\n");
+  const at = lines.findIndex((line) => strip(line, isSpace) === "changes:");
+  if (at < 0) return text;
+  const head = lines.slice(0, at);
+  const kept: string[] = [];
+  let inText = false;
+  for (let index = at + 1; index < lines.length; index += 1) {
+    const raw = lines[index] as string;
+    const trimmed = strip(raw, isSpace);
+    if (inText) {
+      if (raw.startsWith("  ")) continue;
+      inText = false;
+    }
+    if (trimmed === "text:" && (hasRead || hasSnapshot)) {
+      inText = true;
+      continue;
+    }
+    if (hasSnapshot && (trimmed.startsWith("new document,") || trimmed.startsWith("+ ") || trimmed.startsWith("- ") || trimmed.startsWith("~ "))) continue;
+    if (hasRead && trimmed.startsWith("- ")) continue;
+    if (hasForm && FIELD_DIFF_LINE.test(trimmed)) continue;
+    kept.push(raw);
+  }
+  const rest = kept.filter((line) => strip(line, isSpace) !== "");
+  if (rest.length === 0) return head.join("\n").replace(/\n+$/u, "");
+  return [...head, "changes:", ...kept].join("\n");
+}
+
+function inspectMatchesAllowlist(words: readonly string[], boolFlags: ReadonlySet<string>, valueFlags: ReadonlySet<string>): boolean {
+  for (let i = 1; i < words.length; i += 1) {
+    const w = words[i] as string;
+    if (boolFlags.has(w)) continue;
+    if (valueFlags.has(w)) {
+      if (i + 1 >= words.length) return false;
+      i += 1;
+      continue;
+    }
+    const eq = w.indexOf("=");
+    if (eq > 0 && valueFlags.has(w.slice(0, eq))) continue;
+    return false;
+  }
+  return true;
+}
+
+const READ_FULL_FLAGS = new Set(["--nav", "--full", "--raw"]);
+const SNAPSHOT_FULL_FLAGS = new Set(["-c", "--compact", "-u", "--urls", "--full", "--all", "--no-modal-scope", "--tools"]);
+const FORM_FULL_FLAGS = new Set(["--full"]);
+const INSPECT_VALUE_FLAGS = new Set(["--timeout"]);
+
+export function compactBatchLines(outcomes: Outcome[], batchCap = BATCH_DEFAULT_CAP): void {
   const succeeded = outcomes.flatMap((outcome, index) => (outcome.success ? [index] : []));
   if (succeeded.length < 2) return;
   let compacted = 0;
@@ -413,9 +465,44 @@ function compactBatchLines(outcomes: Outcome[]): void {
     const words = Array.isArray(command) ? (command as string[]) : shlexSplit(String(command));
     let name = words[0] ?? "";
     if (words[0] === "find" && words.length >= 4) name = (["role", "text", "label", "placeholder", "alt", "title", "testid"].includes(words[1] as string) ? words[3] : words[2]) as string;
-    if (!COMPACTED_COMMANDS.has(name) || !valueOnly(outcome.text)) continue;
-    outcome.text = `✓ ${words.map(quoteWord).join(" ")}`;
-    compacted += 1;
+    if (COMPACTED_COMMANDS.has(name) && valueOnly(outcome.text)) {
+      outcome.text = `✓ ${words.map(quoteWord).join(" ")}`;
+      compacted += 1;
+      continue;
+    }
+    if (!outcome.text || !outcome.text.includes("changes:\n")) continue;
+    let hasRead = false;
+    let hasSnapshot = false;
+    let hasForm = false;
+    for (let next = index + 1; next < outcomes.length; next += 1) {
+      const follow = outcomes[next] as Outcome;
+      if (!follow.success) break;
+      const fWords = Array.isArray(follow.command) ? (follow.command as string[]) : shlexSplit(String(follow.command));
+      const fName = ALIASES[fWords[0] ?? ""] ?? (fWords[0] ?? "");
+      if (!PASS_THROUGH_INSPECT.has(fName)) break;
+      const scopedFlag = fWords.some((w) => w === "-s" || w === "--selector" || w.startsWith("--selector="));
+      if (scopedFlag) continue;
+      const followData = follow.result && typeof follow.result === "object" && !Array.isArray(follow.result)
+        ? (follow.result as Record<string, unknown>)
+        : null;
+      if (fName === "read") {
+        const fullRead = inspectMatchesAllowlist(fWords, READ_FULL_FLAGS, INSPECT_VALUE_FLAGS);
+        const isDelta = Boolean(follow.text && (follow.text.includes("unchanged since last read") || follow.text.includes("unchanged lines omitted")));
+        const fitsCap = batchCap <= 0 || pyLen(outcomes.map((o) => (o.success ? o.text : failedText(o)) || "").join("\n\n")) <= batchCap;
+        if (fullRead && !isDelta && !followData?.["truncated"] && fitsCap) hasRead = true;
+      } else if (fName === "snapshot") {
+        if (inspectMatchesAllowlist(fWords, SNAPSHOT_FULL_FLAGS, INSPECT_VALUE_FLAGS) && !followData?.["fit"] && !followData?.["modal"]) hasSnapshot = true;
+      } else if (fName === "form") {
+        if (inspectMatchesAllowlist(fWords, FORM_FULL_FLAGS, INSPECT_VALUE_FLAGS) && !followData?.["more"]) hasForm = true;
+      }
+    }
+    if (hasRead || hasSnapshot || hasForm) {
+      const trimmed = trimSupersededChanges(outcome.text, hasRead, hasSnapshot, hasForm);
+      if (trimmed !== outcome.text) {
+        outcome.text = trimmed;
+        compacted += 1;
+      }
+    }
   }
   if (compacted) add("batch_lines_compacted", compacted);
 }
@@ -707,7 +794,8 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
       });
     }
   }
-  compactBatchLines(outcomes);
+  const batchCap = ctx.options["full"] ? 0 : ctx.options["max_output"] === undefined || ctx.options["max_output"] === null ? OUTPUT_CAP : Number(ctx.options["max_output"]);
+  compactBatchLines(outcomes, batchCap);
   let text = outcomes.map((outcome) => (outcome.success ? outcome.text : failedText(outcome)) || "").join("\n\n");
   let savedWhole = false;
   if (options["out"]) {
@@ -718,7 +806,6 @@ async function runBatch(ctx: Ctx, argv: string[]): Promise<Result> {
   const result = new Result({ results: outcomes }, text, fromPage);
   result.lost = lost;
   if (notices.length > 0) result.notice = notices.join("\n");
-  const batchCap = ctx.options["full"] ? 0 : ctx.options["max_output"] === undefined || ctx.options["max_output"] === null ? OUTPUT_CAP : Number(ctx.options["max_output"]);
   const shown = ctx.state.pendingShown;
   ctx.state.pendingShown = null;
   if (shown !== null && !savedWhole && !(batchCap > 0 && pyLen(text) > batchCap)) commitShown(ctx.state, shown);
