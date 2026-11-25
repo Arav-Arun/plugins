@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { daemonEnvironment } from "../src/browse/daemon/spawn.ts";
-import { type Endpoint, endpointKey, splitUrl } from "../src/browse/request.ts";
+import { Usage } from "../src/browse/args.ts";
+import { checkEnvEndpoint, type Endpoint, endpointKey, splitUrl } from "../src/browse/request.ts";
 import type { JsonObject, Value } from "../src/json.ts";
 
 const ROOT = "/tmp/ardia-root";
@@ -54,5 +55,22 @@ describe("endpointKey follows the endpoint the daemon reaches", () => {
 
   test("ARDIA_PORT and --port with the same port share a daemon", () => {
     expect(endpointKey(NO_FLAGS, ROOT, { ARDIA_PORT: "9222" })).toBe(endpointKey({ ...NO_FLAGS, port: 9222n }, ROOT, {}));
+  });
+});
+
+describe("an ARDIA_PORT the daemon would refuse is refused before a session is claimed", () => {
+  test("one that isn't a number", () => {
+    expect(() => checkEnvEndpoint({ ARDIA_PORT: "nine" })).toThrow(new Usage("ARDIA_PORT must be a port number, not 'nine'"));
+  });
+
+  test("one out of range", () => {
+    expect(() => checkEnvEndpoint({ ARDIA_PORT: "70000" })).toThrow(new Usage("ARDIA_PORT must be between 1 and 65535, not 70000"));
+    expect(() => checkEnvEndpoint({ ARDIA_PORT: "0" })).toThrow(new Usage("ARDIA_PORT must be between 1 and 65535, not 0"));
+  });
+
+  test("a usable one, or one ARDIA_WS overrides", () => {
+    for (const environment of [{}, { ARDIA_PORT: "9222" }, { ARDIA_PORT: "65535" }, { ARDIA_WS: WS, ARDIA_PORT: "nine" }, { ARDIA_CDP_URL: CDP }]) {
+      expect(() => checkEnvEndpoint(environment)).not.toThrow();
+    }
   });
 });

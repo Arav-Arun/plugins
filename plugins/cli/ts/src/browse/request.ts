@@ -136,7 +136,23 @@ export function endpointChoice(found: Found): Endpoint {
     if ("invalid" in parsed) throw new Usage("--port takes a number");
     number = parsed.value;
   }
+  if (!ws && number === undefined) checkEnvEndpoint(process.env);
   return { ws, port: number, dataDir: found.value("data_dir") };
+}
+
+// The daemon refuses an ARDIA_PORT that isn't a port. Refuse it here instead, before a session is claimed
+// (and an idle one maybe closed to make room) for a daemon that can't start.
+export function checkEnvEndpoint(environment: NodeJS.ProcessEnv): void {
+  let found: EnvEndpoint | null;
+  try {
+    found = envEndpoint(environment);
+  } catch (error) {
+    if (error instanceof EndpointError) throw new Usage(error.message);
+    throw error;
+  }
+  if (found?.kind === "port" && !(found.port > 0n && found.port < 65536n)) {
+    throw new Usage(`ARDIA_PORT must be between 1 and 65535, not ${found.port}`);
+  }
 }
 
 type Split = { scheme: string; netloc: string; path: string; query: string };
