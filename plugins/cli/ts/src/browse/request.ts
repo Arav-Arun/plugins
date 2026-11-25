@@ -5,6 +5,7 @@ import { builtinCrash } from "./errors.ts";
 import { createHash } from "node:crypto";
 import { fstatSync } from "node:fs";
 import { dataRoot } from "../control.ts";
+import { EndpointError, type EnvEndpoint, envEndpoint } from "./endpoint.ts";
 import type { JsonObject, Value } from "../json.ts";
 import { checkName, type Found, pythonInt, truthy, Usage } from "./args.ts";
 
@@ -166,14 +167,25 @@ export function rootOf(endpoint: Endpoint): string {
   return dataRoot(endpoint.dataDir);
 }
 
-export function endpointKey(endpoint: Endpoint, root: string): string {
-  const url = endpoint.ws ? endpoint.ws : endpoint.port !== undefined ? undefined : env("ARDIA_CDP_URL");
-  if (url) {
-    const parts = splitUrl(url);
-    return `ws:${parts.scheme}://${parts.netloc}${parts.path}`;
-  }
+function wsKey(url: string): string {
+  const parts = splitUrl(url);
+  return `ws:${parts.scheme}://${parts.netloc}${parts.path}`;
+}
+
+// Keys the session by the endpoint its daemon will reach: the flags first, then the environment as
+// envEndpoint() reads it (ARDIA_WS, ARDIA_PORT, ARDIA_CDP_URL), the order daemonEnvironment() hands the daemon.
+export function endpointKey(endpoint: Endpoint, root: string, environment: NodeJS.ProcessEnv = process.env): string {
+  if (endpoint.ws) return wsKey(endpoint.ws);
   if (endpoint.port !== undefined) return `port:${endpoint.port}`;
-  return `token:${root}`;
+  let found: EnvEndpoint | null;
+  try {
+    found = envEndpoint(environment);
+  } catch (error) {
+    if (!(error instanceof EndpointError)) throw error;
+    return `port:${environment["ARDIA_PORT"]}`;
+  }
+  if (found === null) return `token:${root}`;
+  return found.kind === "ws" ? wsKey(found.url) : `port:${found.port}`;
 }
 
 export function sessionKey(namespace: string, endpointKey: string, session: string, forPlugin = false): string {
